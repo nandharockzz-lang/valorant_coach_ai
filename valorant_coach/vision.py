@@ -778,87 +778,147 @@ def build_local_ai_review_sequence(
     db: Database,
     death_id: int,
     work_dir: Path,
-    seconds_before: float = 5.0,
-    fps: int = 6,
+    mode: str = "contact",
 ) -> Dict[str, Any]:
     death = db.get_death(death_id)
     if not death:
         raise ValueError(f"Unknown death id: {death_id}")
-    source_info = local_ai_sequence_source(db, death, seconds_before)
-    if not source_info:
-        return {
-            "ok": False,
-            "message": "A full VOD death timestamp or extracted clip is required for local AI sequence review.",
-            "analysis": None,
-        }
-    source = source_info["source"]
-    if not source.exists():
-        return {"ok": False, "message": "Video source is missing.", "analysis": None}
     ffmpeg = ffmpeg_path()
     if not ffmpeg:
         return {"ok": False, "message": "ffmpeg is required for local AI sequence extraction.", "analysis": None}
 
+    profile = local_ai_sequence_profile(mode)
     frame_dir = work_dir / "local-ai-sequences" / f"death-{death_id}"
-    frames = extract_sequence_frames(ffmpeg, source, frame_dir, float(source_info["start"]), float(source_info["duration"]), fps)
-    if not frames:
-        return {"ok": False, "message": "No frames could be extracted for the high-density local AI sequence.", "analysis": None}
-    timeline = build_timeline(frames, db.get_calibration())
-    if not timeline:
-        return {"ok": False, "message": "No readable frames were available for local AI sequence review.", "analysis": None}
     sequence = []
-    for index, item in enumerate(timeline, start=1):
+    source_kind = ""
+
+    for segment_index, segment in enumerate(profile["segments"], start=1):
+        source_info = local_ai_sequence_source(db, death, float(segment["start_before"]), float(segment["duration"]))
+        if not source_info:
+            return {
+                "ok": False,
+                "message": "A full VOD death timestamp or extracted clip is required for local AI sequence review.",
+                "analysis": None,
+            }
+        source = source_info["source"]
+        if not source.exists():
+            return {"ok": False, "message": "Video source is missing.", "analysis": None}
+        source_kind = source_info["kind"]
+        segment_dir = frame_dir / f"segment-{segment_index}-{segment['label']}"
+        frames = extract_sequence_frames(
+            ffmpeg,
+            source,
+            segment_dir,
+            float(source_info["start"]),
+            float(source_info["duration"]),
+            int(segment["fps"]),
+        )
+        if not frames:
+            continue
+        timeline = build_timeline(frames, db.get_calibration())
+        for item in timeline:
+            sequence.append(sequence_frame_payload(item, segment, source_info, len(sequence) + 1))
+
+    if not sequence:
+        return {"ok": False, "message": "No frames could be extracted for the selected local AI review mode.", "analysis": None}
+
+    for item in sequence:
+        index = int(item["sequence_index"])
         stem = f"localai-death-{death_id}-{index:02d}"
         target = frame_dir / f"{stem}.jpg"
-        shutil.copyfile(item.path, target)
-        relative_second = round((index - 1) / float(fps), 2)
-        timestamp = None
-        if source_info.get("vod_timestamp_start") is not None:
-            timestamp = round(float(source_info["vod_timestamp_start"]) + relative_second, 2)
-        sequence.append(
-            {
-                "role": "pre-death-sequence",
-                "sequence_index": index,
-                "frame_id": stem,
-                "timestamp": timestamp if timestamp is not None else relative_second,
-                "relative_second": relative_second,
-                "seconds_before_death": round(max(0.0, float(source_info["duration"]) - relative_second), 2),
-                "reason": item.reason,
-                "metrics": {
-                    "death_score": round(item.death_score, 3),
-                    "pressure_score": round(item.pressure_score, 3),
-                    "motion": round(item.motion, 3),
-                    "crosshair_activity": round(item.crosshair_activity, 3),
-                    "crosshair_drift": round(item.crosshair_drift, 3),
-                    "minimap_motion": round(item.minimap_motion, 3),
-                },
-            }
-        )
+        shutil.copyfile(Path(str(item.pop("path"))), target)
+        item["frame_id"] = stem
+
     result = {
         "kind": "local_ai_sequence",
         "death_id": death_id,
-        "summary": f"Prepared {len(sequence)} ordered frame(s) at {fps} FPS from the final {seconds_before:g} seconds before death.",
+        "summary": f"Prepared {len(sequence)} ordered frame(s) using {profile['label']} mode.",
         "frames": sequence,
-        "fps": fps,
-        "seconds_before": seconds_before,
-        "source": source_info["kind"],
+        "mode": profile["id"],
+        "mode_label": profile["label"],
+        "source": source_kind,
         "confidence": 0.65 if sequence else 0.0,
     }
     db.save_death_analysis(death_id, "local_ai_sequence", result)
     return {"ok": True, "message": result["summary"], "analysis": result}
 
 
-def local_ai_sequence_source(db: Database, death: Dict[str, Any], seconds_before: float) -> Optional[Dict[str, Any]]:
+def local_ai_sequence_profile(mode: str) -> Dict[str, Any]:
+    mode = str(mode or "contact").strip().lower()
+    profiles = {
+        "context": {
+            "id": "context",
+            "label": "Context: final 10s at 2 FPS",
+            "limit": 24,
+            "segments": [{"label": "context", "start_before": 10.0, "duration": 10.0, "fps": 2}],
+        },
+        "contact": {
+            "id": "contact",
+            "label": "Contact: final 5s at 6 FPS",
+            "limit": 36,
+            "segments": [{"label": "contact", "start_before": 5.0, "duration": 5.0, "fps": 6}],
+        },
+        "hybrid": {
+            "id": "hybrid",
+            "label": "Hybrid: context 5s at 2 FPS + contact 5s at 6 FPS",
+            "limit": 48,
+            "segments": [
+                {"label": "setup-context", "start_before": 10.0, "duration": 5.0, "fps": 2},
+                {"label": "contact", "start_before": 5.0, "duration": 5.0, "fps": 6},
+            ],
+        },
+    }
+    return profiles.get(mode) or profiles["contact"]
+
+
+def sequence_frame_payload(
+    item: FrameMetrics,
+    segment: Dict[str, Any],
+    source_info: Dict[str, Any],
+    index: int,
+) -> Dict[str, Any]:
+    fps = float(segment["fps"])
+    segment_elapsed = float(item.timestamp) / fps
+    relative_second = round(float(segment["start_before"]) * -1.0 + segment_elapsed, 2)
+    seconds_before_death = round(max(0.0, float(segment["start_before"]) - segment_elapsed), 2)
+    timestamp = None
+    if source_info.get("vod_timestamp_start") is not None:
+        timestamp = round(float(source_info["vod_timestamp_start"]) + segment_elapsed, 2)
+    return {
+        "role": str(segment["label"]),
+        "sequence_index": index,
+        "path": str(item.path),
+        "timestamp": timestamp if timestamp is not None else segment_elapsed,
+        "relative_second": relative_second,
+        "seconds_before_death": seconds_before_death,
+        "fps": int(segment["fps"]),
+        "reason": item.reason,
+        "metrics": {
+            "death_score": round(item.death_score, 3),
+            "pressure_score": round(item.pressure_score, 3),
+            "motion": round(item.motion, 3),
+            "crosshair_activity": round(item.crosshair_activity, 3),
+            "crosshair_drift": round(item.crosshair_drift, 3),
+            "minimap_motion": round(item.minimap_motion, 3),
+        },
+    }
+
+
+def local_ai_sequence_source(db: Database, death: Dict[str, Any], start_before: float, duration: float) -> Optional[Dict[str, Any]]:
     timestamp = death.get("timestamp")
     match = db.get_match(int(death["match_id"])) if death.get("match_id") else None
     if match and timestamp is not None:
         video_path = Path(match["video_path"])
         if video_path.exists():
-            start = max(0.0, float(timestamp) - seconds_before)
+            desired_start = float(timestamp) - start_before
+            desired_end = desired_start + duration
+            start = max(0.0, desired_start)
+            end = min(float(timestamp), desired_end)
             return {
                 "kind": "full-vod",
                 "source": video_path,
                 "start": start,
-                "duration": min(seconds_before, float(timestamp)),
+                "duration": max(0.5, end - start),
                 "vod_timestamp_start": start,
             }
     clip_path = death.get("clip_path")
@@ -866,8 +926,8 @@ def local_ai_sequence_source(db: Database, death: Dict[str, Any], seconds_before
         return {
             "kind": "clip",
             "source": Path(clip_path),
-            "start": max(0.0, 15.0 - seconds_before),
-            "duration": seconds_before,
+            "start": max(0.0, 15.0 - start_before),
+            "duration": duration,
             "vod_timestamp_start": None,
         }
     return None

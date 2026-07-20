@@ -256,6 +256,13 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
           <option value="ocr" ${localAi.purpose === "ocr" ? "selected" : ""}>OCR / HUD reader</option>
         </select>
       </label>
+      <label>Review mode
+        <select id="localAiReviewMode">
+          <option value="contact" ${localAi.review_mode === "contact" ? "selected" : ""}>Contact: final 5s at 6 FPS</option>
+          <option value="hybrid" ${localAi.review_mode === "hybrid" ? "selected" : ""}>Hybrid: context + contact</option>
+          <option value="context" ${localAi.review_mode === "context" ? "selected" : ""}>Context: final 10s at 2 FPS</option>
+        </select>
+      </label>
       <label>Base URL <input id="localAiBaseUrl" type="text" value="${escapeAttr(localAi.base_url || "")}" placeholder="http://127.0.0.1:11434" /></label>
       <label>Custom command <input id="localAiCommand" type="text" value="${escapeAttr(localAi.command || "")}" placeholder="python C:\\path\\review_clip.py" /></label>
       <div class="row">
@@ -543,6 +550,7 @@ async function saveLocalAiConfig() {
   const payload = {
     provider: document.querySelector("#localAiProvider").value,
     purpose: document.querySelector("#localAiPurpose").value,
+    review_mode: document.querySelector("#localAiReviewMode").value,
     model: document.querySelector("#localAiModel").value,
     base_url: document.querySelector("#localAiBaseUrl").value,
     command: document.querySelector("#localAiCommand").value,
@@ -558,9 +566,11 @@ function useLmStudioDefaults() {
   const baseUrl = document.querySelector("#localAiBaseUrl");
   const command = document.querySelector("#localAiCommand");
   const purpose = document.querySelector("#localAiPurpose");
+  const reviewMode = document.querySelector("#localAiReviewMode");
   if (provider) provider.value = "lmstudio";
   if (baseUrl) baseUrl.value = "http://127.0.0.1:1234/v1";
   if (purpose) purpose.value = "coach";
+  if (reviewMode) reviewMode.value = "contact";
   if (model && !model.value) model.value = "local-model";
   if (command) command.value = "";
   setStatus("LM Studio defaults filled. If LM Studio shows a specific model ID, paste it into Model before saving.");
@@ -572,9 +582,11 @@ function useOlmocrDefaults() {
   const baseUrl = document.querySelector("#localAiBaseUrl");
   const command = document.querySelector("#localAiCommand");
   const purpose = document.querySelector("#localAiPurpose");
+  const reviewMode = document.querySelector("#localAiReviewMode");
   if (provider) provider.value = "lmstudio";
   if (baseUrl) baseUrl.value = "http://127.0.0.1:1234/v1";
   if (purpose) purpose.value = "ocr";
+  if (reviewMode) reviewMode.value = "context";
   if (model) model.value = model.value || "olmocr";
   if (command) command.value = "";
   setStatus("olmOCR defaults filled. Paste the exact LM Studio model id if it differs, then Test Local AI and Save.");
@@ -584,6 +596,7 @@ async function testLocalAiConfig() {
   const payload = {
     provider: document.querySelector("#localAiProvider").value,
     purpose: document.querySelector("#localAiPurpose").value,
+    review_mode: document.querySelector("#localAiReviewMode").value,
     model: document.querySelector("#localAiModel").value,
     base_url: document.querySelector("#localAiBaseUrl").value,
     command: document.querySelector("#localAiCommand").value,
@@ -621,6 +634,7 @@ async function saveSetupWizard() {
       local_ai_model: document.querySelector("#localAiModel")?.value || "",
       local_ai_base_url: document.querySelector("#localAiBaseUrl")?.value || "",
       local_ai_command: document.querySelector("#localAiCommand")?.value || "",
+      local_ai_review_mode: document.querySelector("#localAiReviewMode")?.value || "contact",
     }),
   });
   els.recordingDir.value = document.querySelector("#setupRecordingDir").value;

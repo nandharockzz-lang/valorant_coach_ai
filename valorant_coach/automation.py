@@ -26,6 +26,7 @@ from .vision import (
     build_keyframe_gallery,
     build_local_ai_review_sequence,
     build_review_queue,
+    local_ai_sequence_profile,
     reconstruct_rounds,
     score_crosshair_match,
     scan_full_vod_coach_moments,
@@ -938,7 +939,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.10.9-local"
+APP_VERSION = "0.11.0-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -949,6 +950,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Add Local AI review modes: Context, Contact, and Hybrid frame sampling.",
             "Use a higher-density final 5-second local AI frame sequence to catch fast enemy peeks before death.",
             "Move transient app status messages from the Recordings card into a fixed bottom status bar.",
             "Send a dense 10-second pre-death frame sequence to local vision models instead of only a few keyframes.",
@@ -1432,6 +1434,8 @@ def local_ai_status(db: Database) -> Dict[str, Any]:
     base_url = str(db.get_setting("local_ai_base_url", default_base_url(provider)) or "").strip()
     model = str(db.get_setting("local_ai_model", default_model(provider)) or "").strip()
     purpose = str(db.get_setting("local_ai_purpose", "coach") or "coach").strip()
+    review_mode = str(db.get_setting("local_ai_review_mode", "contact") or "contact").strip()
+    sequence_profile = local_ai_sequence_profile(review_mode)
     enabled = bool(command) if provider == "custom-command" else bool(base_url and model)
     return {
         "enabled": enabled,
@@ -1441,6 +1445,8 @@ def local_ai_status(db: Database) -> Dict[str, Any]:
         "command": command,
         "base_url": base_url,
         "model": model,
+        "review_mode": sequence_profile["id"],
+        "review_mode_label": sequence_profile["label"],
         "status": "configured" if enabled else "disabled",
         "expected_protocol": "custom command uses stdin JSON/stdout JSON; HTTP providers use local-only JSON requests",
         "providers": [
@@ -1458,12 +1464,14 @@ def save_local_ai_config(db: Database, payload: Dict[str, Any]) -> Dict[str, Any
     command = str(payload.get("command") or "").strip()
     base_url = str(payload.get("base_url") or default_base_url(provider)).strip()
     model = str(payload.get("model") or default_model(provider)).strip()
+    review_mode = local_ai_sequence_profile(str(payload.get("review_mode") or "contact"))["id"]
     db.set_setting("local_ai_provider", provider)
     db.set_setting("local_ai_purpose", purpose)
     db.set_setting("local_ai_command", command)
     db.set_setting("local_ai_base_url", base_url)
     db.set_setting("local_ai_model", model)
-    db.log("info", "local-ai", "Updated local AI configuration", {"provider": provider, "purpose": purpose, "configured": bool(command or base_url)})
+    db.set_setting("local_ai_review_mode", review_mode)
+    db.log("info", "local-ai", "Updated local AI configuration", {"provider": provider, "purpose": purpose, "review_mode": review_mode, "configured": bool(command or base_url)})
     return {"ok": True, "local_ai": local_ai_status(db)}
 
 
@@ -1474,6 +1482,7 @@ def test_local_ai_connection(db: Database, payload: Optional[Dict[str, Any]] = N
         status = {
             "provider": provider,
             "purpose": str(payload.get("purpose") or "coach").strip(),
+            "review_mode": local_ai_sequence_profile(str(payload.get("review_mode") or "contact"))["id"],
             "command": str(payload.get("command") or "").strip(),
             "base_url": str(payload.get("base_url") or default_base_url(provider)).strip(),
             "model": str(payload.get("model") or "").strip(),
@@ -1536,14 +1545,15 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
         }
         db.save_death_analysis(death_id, "local_ai_review", result)
         return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
-    sequence = build_local_ai_review_sequence(db, death_id, db.path.parent / "vision")
+    sequence_profile = local_ai_sequence_profile(str(status.get("review_mode") or "contact"))
+    sequence = build_local_ai_review_sequence(db, death_id, db.path.parent / "vision", mode=sequence_profile["id"])
     if not sequence.get("ok"):
         return {"ok": False, "message": sequence.get("message") or "Could not prepare local AI review sequence.", "status": status}
     request = {
         "death": death,
         "annotations": death.get("annotations") or [],
         "clip_path": death.get("clip_path"),
-        "keyframes": keyframe_payload(db, death_id, analysis_type="local_ai_sequence", limit=36),
+        "keyframes": keyframe_payload(db, death_id, analysis_type="local_ai_sequence", limit=int(sequence_profile["limit"])),
         "prompt": render_model_prompt(db, death),
         "privacy": "local-only",
     }
@@ -1622,7 +1632,7 @@ def keyframe_caption(item: Dict[str, Any]) -> str:
     rel = item.get("relative_second")
     pieces = [f"Frame {item.get('sequence_index') or item.get('index')}: {role}"]
     if rel is not None:
-        pieces.append(f"relative +{rel}s in the review sequence")
+        pieces.append(f"relative {float(rel):+.2f}s in the review sequence")
     if item.get("seconds_before_death") is not None:
         pieces.append(f"{item.get('seconds_before_death')}s before death")
     if ts is not None:
@@ -1647,6 +1657,7 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
     templates = prompt_templates(db)["templates"]
     key = str(db.get_setting("active_prompt_template", "default") or "default")
     template = templates.get(key) or templates["default"]
+    sequence_profile = local_ai_sequence_profile(str(db.get_setting("local_ai_review_mode", "contact") or "contact"))
     labels = ", ".join(death.get("mistake_labels") or [])
     base = template["prompt"].format(
         round=death_round_label(death),
@@ -1656,7 +1667,7 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
     )
     return (
         base
-        + "\n\nYou will receive a high-density ordered frame sequence from the final 5 seconds before this death marker. "
+        + f"\n\nYou will receive an ordered frame sequence using this sampling mode: {sequence_profile['label']}. "
         "Treat the images as a short local video clip in chronological order. Track crosshair movement, clearing path, movement while aiming, minimap/HUD changes, and fight setup over time. "
         "Enemies can appear for only one or two frames, so scan every frame for a visible opponent, damage cue, tracer, muzzle flash, or sudden contact. "
         "Use only visible evidence from those frames. Do not assume enemy positions, player intent, comms, utility usage, or the outcome unless visible. "
@@ -1765,7 +1776,7 @@ def local_model_system_prompt(status: Dict[str, Any]) -> str:
             "Return strict compact JSON. Do not provide tactical advice unless directly supported by visible HUD text."
         )
     return (
-        "You are a VALORANT VOD coach reviewing a high-density ordered local frame sequence from the final 5 seconds before a death. "
+        "You are a VALORANT VOD coach reviewing an ordered local frame sequence before a death. "
         "Return strict compact JSON with summary, visible_evidence, labels, better_play, drill, confidence. "
         "Analyze how the player clears, moves, aims, checks HUD/minimap, and enters the fight across time. Enemies may be visible for only one or two frames, so inspect the whole sequence frame-by-frame. "
         "Use only visible frame evidence. Do not invent hidden enemies, comms, unseen utility, prior context, or player intent. "
@@ -1962,7 +1973,7 @@ def save_setup_wizard(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("recording_dir", "auto_import", "auto_analysis", "frame_sample_rate", "detector_sensitivity"):
         if key in payload:
             db.set_setting(key, str(payload.get(key) or ""))
-    if any(key in payload for key in ("local_ai_provider", "local_ai_command", "local_ai_base_url", "local_ai_model")):
+    if any(key in payload for key in ("local_ai_provider", "local_ai_command", "local_ai_base_url", "local_ai_model", "local_ai_review_mode")):
         save_local_ai_config(
             db,
             {
@@ -1970,6 +1981,7 @@ def save_setup_wizard(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "command": payload.get("local_ai_command"),
                 "base_url": payload.get("local_ai_base_url"),
                 "model": payload.get("local_ai_model"),
+                "review_mode": payload.get("local_ai_review_mode"),
             },
         )
     db.set_setting("setup_completed", "true")
