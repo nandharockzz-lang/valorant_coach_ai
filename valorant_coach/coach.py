@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from .advice import ADVICE_BY_LABEL
+from .advice import ADVICE_BY_LABEL, generate_advice
 from .db import Database
 
 
@@ -89,6 +89,224 @@ def build_match_review(db: Database, match_id: int) -> Dict[str, Any]:
     review_id = db.save_match_review(review)
     review["id"] = review_id
     return review
+
+
+def build_guided_match_coach(db: Database, match_id: int) -> Dict[str, Any]:
+    match = db.get_match(match_id)
+    if not match:
+        raise ValueError(f"Unknown match id: {match_id}")
+
+    deaths = db.get_deaths(match_id)
+    suggestions = db.get_death_suggestions(match_id)
+    profile = db.get_profile()
+    trends = db.build_trends()
+    active_goal = db.get_active_goal()
+    label_counts = count_labels(deaths)
+    generated_advice = []
+
+    for death in deaths[:6]:
+        if not death.get("advice"):
+            generated_advice.append(generate_advice(db, int(death["id"])))
+
+    deaths = db.get_deaths(match_id)
+    review = build_match_review(db, match_id)
+    focus = choose_focus(active_goal, label_counts, trends)
+    review_order = build_review_order(deaths, suggestions, focus)
+    homework = build_homework(focus, match, profile, review_order)
+    coach = {
+        "kind": "guided_match_coach",
+        "match_id": match_id,
+        "summary": guided_summary(match, deaths, suggestions, focus, generated_advice),
+        "focus": focus,
+        "coach_read": coach_read(match, deaths, suggestions, label_counts, focus, review),
+        "review_order": review_order,
+        "between_round_rule": between_round_rule(focus),
+        "homework": homework,
+        "generated_advice": len(generated_advice),
+        "confidence": guided_confidence(deaths, suggestions, generated_advice),
+    }
+    coach["id"] = db.save_structured_analysis(match_id, "guided_coach", coach)
+    return coach
+
+
+def choose_focus(
+    active_goal: Optional[Dict[str, Any]],
+    label_counts: Dict[str, int],
+    trends: Dict[str, Any],
+) -> str:
+    if active_goal and active_goal.get("focus_label"):
+        return str(active_goal["focus_label"])
+    return first_key(label_counts) or first_key(trends.get("labels") or {}) or "death review discipline"
+
+
+def build_review_order(
+    deaths: List[Dict[str, Any]],
+    suggestions: List[Dict[str, Any]],
+    focus: str,
+) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    scored_deaths = sorted(deaths, key=lambda death: death_priority(death, focus), reverse=True)
+    for index, death in enumerate(scored_deaths[:5], start=1):
+        labels = death.get("mistake_labels") or []
+        primary = labels[0] if labels else "unlabeled death"
+        items.append(
+            {
+                "rank": index,
+                "kind": "marked_death",
+                "death_id": death["id"],
+                "timestamp": death.get("timestamp"),
+                "title": f"Review death #{death['id']} at {format_ts(death.get('timestamp'))}",
+                "reason": review_reason(death, focus),
+                "pause_question": pause_question(primary),
+                "coach_action": coach_action(primary),
+                "has_advice": bool(death.get("advice")),
+            }
+        )
+    next_rank = len(items) + 1
+    for suggestion in suggestions[: max(0, 5 - len(items))]:
+        items.append(
+            {
+                "rank": next_rank,
+                "kind": "death_candidate",
+                "suggestion_id": suggestion["id"],
+                "timestamp": suggestion.get("timestamp"),
+                "title": f"Check candidate at {format_ts(suggestion.get('timestamp'))}",
+                "reason": suggestion.get("reason") or "The detector found a likely death/combat transition.",
+                "pause_question": "Is this a real death? If yes, what decision made the fight unfavorable?",
+                "coach_action": "Accept it if it is a real death, reject it if it is noise. This teaches the detector.",
+                "has_advice": False,
+            }
+        )
+        next_rank += 1
+    if not items:
+        items.append(
+            {
+                "rank": 1,
+                "kind": "setup",
+                "title": "Create the first review point",
+                "reason": "No deaths or detector candidates are available for this match yet.",
+                "pause_question": "Watch the VOD until your first death, then mark the timestamp and write what happened.",
+                "coach_action": "Use Find Deaths if ffmpeg is available, or manually add the first death marker.",
+                "has_advice": False,
+            }
+        )
+    return items
+
+
+def death_priority(death: Dict[str, Any], focus: str) -> float:
+    labels = death.get("mistake_labels") or []
+    score = float(death.get("confidence") or 0)
+    if focus in labels:
+        score += 2.0
+    if death.get("advice"):
+        score += 0.4
+    if death.get("vision") or death.get("understanding"):
+        score += 0.3
+    if not labels or labels == ["needs manual review"]:
+        score -= 0.5
+    return score
+
+
+def review_reason(death: Dict[str, Any], focus: str) -> str:
+    labels = death.get("mistake_labels") or []
+    if focus in labels:
+        return f"This matches your current focus: {focus}."
+    if labels:
+        return f"This is tagged as {', '.join(labels[:2])}."
+    return "This death needs a sharper label before the coach can learn from it."
+
+
+def pause_question(primary: str) -> str:
+    questions = {
+        "dry peek": "Pause two seconds before contact: what info, utility, or trade made this peek safe?",
+        "crosshair too low/wide": "Pause before the swing: where should the crosshair already be?",
+        "exposed to multiple angles": "Pause before entering space: which second angle can punish you?",
+        "poor reposition after contact": "Pause after first contact: where is the reset or off-angle?",
+        "isolated from team": "Pause before the duel: who can trade you?",
+        "late rotation / bad timing": "Pause before rotating: what confirmed info says move now?",
+        "utility unused before taking space": "Pause before taking space: which ability should be spent first?",
+    }
+    return questions.get(primary, "Pause before the death: what was the last safer decision available?")
+
+
+def coach_action(primary: str) -> str:
+    template = ADVICE_BY_LABEL.get(primary)
+    if template:
+        return template["better_play"]
+    return "Write one better decision, then tag the death so future reviews become more personalized."
+
+
+def guided_summary(
+    match: Dict[str, Any],
+    deaths: List[Dict[str, Any]],
+    suggestions: List[Dict[str, Any]],
+    focus: str,
+    generated_advice: List[Dict[str, Any]],
+) -> str:
+    map_name = match.get("map") or "unknown map"
+    agent = match.get("agent") or "unknown agent"
+    advice_text = f" Generated {len(generated_advice)} new advice item(s)." if generated_advice else ""
+    return (
+        f"Coach mode for {map_name} as {agent}: review {len(deaths)} marked death(s), "
+        f"check {len(suggestions)} pending candidate(s), and keep the session focus on {focus}."
+        f"{advice_text}"
+    )
+
+
+def coach_read(
+    match: Dict[str, Any],
+    deaths: List[Dict[str, Any]],
+    suggestions: List[Dict[str, Any]],
+    label_counts: Dict[str, int],
+    focus: str,
+    review: Dict[str, Any],
+) -> str:
+    if deaths:
+        top = first_key(label_counts) or "unlabeled deaths"
+        return (
+            f"The coach read is not to review every tool output. Start with the highest-signal deaths, "
+            f"look for the repeated decision pattern, then compare against the focus. Current top pattern: {top}. "
+            f"Match review says: {review.get('next_action')}"
+        )
+    if suggestions:
+        return "The first coaching task is verification: accept real death candidates and reject noise so the agent can learn your recording style."
+    return "There is not enough evidence yet. The coach needs at least one marked death or accepted detector candidate before it can give personal feedback."
+
+
+def between_round_rule(focus: str) -> str:
+    template = ADVICE_BY_LABEL.get(focus)
+    if template:
+        return template["better_play"]
+    return "Before each committed fight, name your advantage: info, utility, trade, timing, or position."
+
+
+def build_homework(
+    focus: str,
+    match: Dict[str, Any],
+    profile: Dict[str, Any],
+    review_order: List[Dict[str, Any]],
+) -> List[str]:
+    agent = match.get("agent") or (profile.get("main_agents") or ["your agent"])[0]
+    base = [
+        f"Review the first {min(3, len(review_order))} coach-selected item(s), not the whole VOD.",
+        f"For each item, answer the pause question before reading the coach action.",
+        f"Next match as {agent}, use one rule only: {between_round_rule(focus)}",
+    ]
+    return base
+
+
+def guided_confidence(
+    deaths: List[Dict[str, Any]],
+    suggestions: List[Dict[str, Any]],
+    generated_advice: List[Dict[str, Any]],
+) -> float:
+    if deaths and generated_advice:
+        return 0.78
+    if deaths:
+        return 0.68
+    if suggestions:
+        return 0.45
+    return 0.25
 
 
 def count_labels(deaths: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -293,3 +511,10 @@ def first_key(items: Dict[str, Any]) -> Optional[str]:
     for key in items:
         return key
     return None
+
+
+def format_ts(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    seconds = int(float(value))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"

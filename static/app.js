@@ -780,6 +780,15 @@ async function generateMatchReview(id) {
   await loadCoach();
 }
 
+async function runGuidedCoach(id) {
+  setStatus(`Coach is reading match #${id}...`);
+  const payload = await api(`/api/matches/${id}/guided-coach`, { method: "POST" });
+  const guided = payload.guided_coach || {};
+  setStatus(guided.summary || "Guided coach plan ready.");
+  await loadReport(id);
+  await loadCoach();
+}
+
 async function runMatchAnalysis(id, type) {
   setStatus(`Running ${type} analysis for match #${id}...`);
   const payload = await api(`/api/matches/${id}/${type}`, { method: "POST" });
@@ -984,7 +993,7 @@ async function loadMatches() {
           <button data-action="view" data-id="${match.id}">Review</button>
           <button class="secondary" data-action="analyze" data-id="${match.id}">Analyze</button>
           <button class="secondary" data-action="suggest" data-id="${match.id}">Find Deaths</button>
-          <button class="ghost" data-action="review" data-id="${match.id}">Coach</button>
+          <button class="ghost" data-action="guided-coach" data-id="${match.id}">Coach Me</button>
         </div>
         <details class="advanced-actions">
           <summary>Advanced tools</summary>
@@ -1002,6 +1011,7 @@ async function loadMatches() {
             <button data-action="story" data-id="${match.id}">Story</button>
             <button data-action="playbook" data-id="${match.id}">Playbook</button>
             <button data-action="clips" data-id="${match.id}">Extract Clips</button>
+            <button data-action="review" data-id="${match.id}">Basic Coach Review</button>
             <button data-action="write" data-id="${match.id}">Write Report</button>
           </div>
         </details>
@@ -1176,7 +1186,9 @@ function renderReport(report) {
   const focus = report.focus.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   const deaths = report.deaths.map(renderDeathCard).join("");
   const review = renderMatchReview(report.review);
+  const guidedCoach = renderGuidedCoach(report.guided_coach, match.id);
   const suggestions = renderSuggestions(report.suggestions || []);
+  const timeline = renderVideoTimeline(report.deaths || [], report.suggestions || []);
   const matchAnalyses = renderMatchAnalyses(report.match_analyses || {});
 
   els.reportView.innerHTML = `
@@ -1186,12 +1198,14 @@ function renderReport(report) {
       <div class="metric"><span>Status</span><strong>${escapeHtml(match.status)}</strong></div>
       <div class="metric"><span>Deaths</span><strong>${report.deaths.length}</strong></div>
     </div>
+    ${guidedCoach}
     <section class="player-wrap">
       <h3>VOD Player</h3>
       <div class="calibration-stage">
         <video id="vodPlayer" controls preload="metadata" src="/api/matches/${match.id}/video"></video>
         <div id="calibrationOverlay" class="calibration-overlay hidden"></div>
       </div>
+      ${timeline}
     </section>
     <section>
       <h3>Add Death Marker</h3>
@@ -1204,6 +1218,7 @@ function renderReport(report) {
         <button data-action="add-death" data-id="${match.id}">Add Death</button>
       </div>
     </section>
+    ${suggestions}
     ${review}
     <section>
       <h3>Recurring Mistakes</h3>
@@ -1237,14 +1252,14 @@ function renderReport(report) {
           <button class="secondary" data-action="save-overlay-calibration">Save Overlay</button>
         </div>
       </section>
-      ${suggestions}
       ${matchAnalyses}
     </details>
   `;
+  attachVideoTimelineSync();
 }
 
 function renderMatchAnalyses(analyses) {
-  const entries = Object.entries(analyses).filter(([, row]) => row && row.payload);
+  const entries = Object.entries(analyses).filter(([type, row]) => type !== "guided_coach" && row && row.payload);
   if (!entries.length) {
     return `
       <section>
@@ -1297,6 +1312,70 @@ function formatAnalysisItem(item) {
   return JSON.stringify(item);
 }
 
+function renderVideoTimeline(deaths, suggestions) {
+  const points = [
+    ...deaths
+      .filter((item) => item.timestamp !== null && item.timestamp !== undefined)
+      .map((item) => ({
+        kind: "death",
+        timestamp: Number(item.timestamp),
+        label: `Marked death R${item.round_number || "?"} @ ${formatTs(item.timestamp)}`,
+      })),
+    ...suggestions
+      .filter((item) => item.timestamp !== null && item.timestamp !== undefined)
+      .map((item) => ({
+        kind: "suggestion",
+        timestamp: Number(item.timestamp),
+        label: `Suggested death @ ${formatTs(item.timestamp)} (${Math.round(Number(item.confidence || 0) * 100)}%)`,
+      })),
+  ].filter((item) => Number.isFinite(item.timestamp));
+  if (!points.length) {
+    return '<p class="muted">No video markers yet. Run Find Deaths or add a death marker.</p>';
+  }
+  const maxTs = Math.max(60, ...points.map((item) => item.timestamp));
+  const markers = points
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((item) => {
+      const left = Math.max(0, Math.min(100, (item.timestamp / maxTs) * 100));
+      return `
+        <button
+          class="timeline-marker ${item.kind}"
+          style="left:${left}%"
+          title="${escapeAttr(item.label)}"
+          data-action="jump"
+          data-ts="${escapeAttr(item.timestamp)}"
+          aria-label="${escapeAttr(item.label)}">
+        </button>
+      `;
+    }).join("");
+  return `
+    <div class="video-timeline">
+      <div class="timeline-track">${markers}</div>
+      <div class="timeline-legend">
+        <span><i class="death"></i>Marked death</span>
+        <span><i class="suggestion"></i>Suggested death</span>
+        <span>${points.length} marker(s)</span>
+      </div>
+    </div>
+  `;
+}
+
+function attachVideoTimelineSync() {
+  const player = document.querySelector("#vodPlayer");
+  if (!player) return;
+  const sync = () => {
+    const duration = Number(player.duration || 0);
+    if (!Number.isFinite(duration) || duration <= 0) return;
+    for (const marker of document.querySelectorAll(".timeline-marker[data-ts]")) {
+      const ts = Number(marker.dataset.ts || 0);
+      const left = Math.max(0, Math.min(100, (ts / duration) * 100));
+      marker.style.left = `${left}%`;
+    }
+  };
+  player.addEventListener("loadedmetadata", sync, { once: true });
+  sync();
+}
+
 function renderSuggestions(suggestions) {
   if (!suggestions.length) {
     return `
@@ -1331,8 +1410,53 @@ function renderSuggestions(suggestions) {
   }).join("");
   return `
     <section>
-      <h3>Suggested Deaths</h3>
+      <h3>Suggested Deaths (${suggestions.length})</h3>
+      <p class="muted">These are detector candidates. Click a timeline marker or Jump, verify the moment in the video, then accept real deaths and reject noise.</p>
       <div class="suggestion-list">${cards}</div>
+    </section>
+  `;
+}
+
+function renderGuidedCoach(row, matchId) {
+  const coach = (row && row.payload) || row || null;
+  if (!coach) {
+    return `
+      <section class="guided-coach empty">
+        <div>
+          <h3>Coach Mode</h3>
+          <p class="muted">Let the agent pick the review order, generate advice for marked deaths, and tell you what to look for.</p>
+        </div>
+        <button data-action="guided-coach" data-id="${matchId}">Coach This Match</button>
+      </section>
+    `;
+  }
+  const items = (coach.review_order || []).map((item) => `
+    <li>
+      <button class="ghost" data-action="jump" data-ts="${escapeAttr(item.timestamp || 0)}">${item.timestamp !== undefined ? formatTs(item.timestamp) : "Open"}</button>
+      <div>
+        <strong>${escapeHtml(item.title || `Step ${item.rank}`)}</strong>
+        <p>${escapeHtml(item.reason || "")}</p>
+        <p><strong>Ask:</strong> ${escapeHtml(item.pause_question || "")}</p>
+        <p><strong>Coach:</strong> ${escapeHtml(item.coach_action || "")}</p>
+      </div>
+    </li>
+  `).join("");
+  const homework = (coach.homework || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  return `
+    <section class="guided-coach">
+      <div class="review-head">
+        <h3>Coach Mode</h3>
+        <strong>${Math.round(Number(coach.confidence || 0) * 100)}%</strong>
+      </div>
+      <p>${escapeHtml(coach.summary || "")}</p>
+      <p><strong>Coach read:</strong> ${escapeHtml(coach.coach_read || "")}</p>
+      <p><strong>Round rule:</strong> ${escapeHtml(coach.between_round_rule || "")}</p>
+      <ol class="coach-steps">${items}</ol>
+      <details class="advanced-actions">
+        <summary>Practice plan</summary>
+        <ul class="compact-list">${homework}</ul>
+      </details>
+      <button class="secondary" data-action="guided-coach" data-id="${matchId}">Refresh Coach Read</button>
     </section>
   `;
 }
@@ -1860,6 +1984,7 @@ els.matchesList.addEventListener("click", (event) => {
   const action = button.dataset.action;
   if (action === "view") loadReport(id).catch((err) => setStatus(err.message));
   if (action === "save-match-metadata") saveMatchMetadata(button).catch((err) => setStatus(err.message));
+  if (action === "guided-coach") runGuidedCoach(id).catch((err) => setStatus(err.message));
   if (action === "pipeline") startPipeline(id).catch((err) => setStatus(err.message));
   if (action === "batch-deaths") startDeathBatch(id).catch((err) => setStatus(err.message));
   if (action === "analyze") analyzeMatch(id).catch((err) => setStatus(err.message));
@@ -1883,6 +2008,7 @@ els.reportView.addEventListener("click", (event) => {
   if (!button) return;
   const action = button.dataset.action;
   if (action === "jump") jumpTo(button.dataset.ts);
+  if (action === "guided-coach") runGuidedCoach(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "preset-label") applyPreset(button);
   if (action === "accept-suggestion") acceptSuggestion(button).catch((err) => setStatus(err.message));
   if (action === "reject-suggestion") rejectSuggestion(button.dataset.id).catch((err) => setStatus(err.message));

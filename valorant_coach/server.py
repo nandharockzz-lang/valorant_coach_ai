@@ -67,7 +67,7 @@ from .automation import (
     update_match_metadata,
 )
 from .clipper import extract_death_clips, ffmpeg_path
-from .coach import build_coach_dashboard, build_match_review
+from .coach import build_coach_dashboard, build_guided_match_coach, build_match_review
 from .db import Database
 from .deep_analysis import ai_review_status, analyze_gameplay, analyze_hud, analyze_minimap, analyze_ocr, tesseract_path
 from .reports import build_report, write_markdown_report
@@ -333,6 +333,10 @@ class CoachHandler(BaseHTTPRequestHandler):
                 match_id = int(parsed.path.split("/")[3])
                 review = build_match_review(DB, match_id)
                 self.json_response({"ok": True, "review": review, "coach": build_coach_dashboard(DB)})
+            elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/guided-coach"):
+                match_id = int(parsed.path.split("/")[3])
+                guided = build_guided_match_coach(DB, match_id)
+                self.json_response({"ok": True, "guided_coach": guided, "coach": build_coach_dashboard(DB)})
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/suggest-deaths"):
                 match_id = int(parsed.path.split("/")[3])
                 self.json_response(suggest_deaths(DB, match_id, VISION_DIR))

@@ -238,6 +238,72 @@ button:hover {
   gap: 10px;
 }
 
+.video-timeline {
+  display: grid;
+  gap: 8px;
+}
+
+.timeline-track {
+  position: relative;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: linear-gradient(90deg, #eef2f4, #ffffff);
+}
+
+.timeline-marker {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+}
+
+.timeline-marker.death {
+  background: var(--red);
+}
+
+.timeline-marker.suggestion {
+  background: var(--teal);
+}
+
+.timeline-marker:hover {
+  width: 16px;
+  height: 16px;
+}
+
+.timeline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.timeline-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.timeline-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+}
+
+.timeline-legend i.death {
+  background: var(--red);
+}
+
+.timeline-legend i.suggestion {
+  background: var(--teal);
+}
+
 video {
   width: 100%;
   max-height: min(64vh, 720px);
@@ -792,6 +858,48 @@ video {
   background: #f8fffd;
 }
 
+.guided-coach {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #bdd6d2;
+  border-left: 5px solid var(--teal);
+  border-radius: 8px;
+  background: #f8fffd;
+}
+
+.guided-coach.empty {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.guided-coach p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.coach-steps {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.coach-steps li {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.coach-steps p {
+  margin-top: 4px;
+}
+
 .match-review p {
   margin: 0;
 }
@@ -799,11 +907,14 @@ video {
 .suggestion-list {
   display: grid;
   gap: 10px;
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .suggestion-card {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
+  grid-template-columns: 120px minmax(0, 1fr);
   gap: 12px;
   padding: 12px;
   border: 1px solid var(--line);
@@ -812,7 +923,7 @@ video {
 }
 
 .suggestion-frame {
-  width: 150px;
+  width: 120px;
   aspect-ratio: 16 / 9;
   object-fit: cover;
   border-radius: 6px;

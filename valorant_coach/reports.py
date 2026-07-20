@@ -28,6 +28,7 @@ def build_report(db: Database, match_id: int) -> Dict[str, Any]:
             "evaluation_benchmark",
             "detector_tuning",
             "session_report",
+            "guided_coach",
         )
     }
     for death in deaths:
@@ -52,6 +53,7 @@ def build_report(db: Database, match_id: int) -> Dict[str, Any]:
         "label_counts": dict(label_counts),
         "focus": focus,
         "review": review,
+        "guided_coach": match_analyses.get("guided_coach"),
         "suggestions": suggestions,
         "match_analyses": match_analyses,
     }
