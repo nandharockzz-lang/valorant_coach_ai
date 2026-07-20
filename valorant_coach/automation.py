@@ -938,7 +938,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.10.7-local"
+APP_VERSION = "0.10.8-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -949,6 +949,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Move transient app status messages from the Recordings card into a fixed bottom status bar.",
             "Send a dense 10-second pre-death frame sequence to local vision models instead of only a few keyframes.",
             "Ground local vision-model reviews with ordered setup, pre-contact, pressure, correction, death, and aftermath keyframes.",
             "Ask local models to cite visible evidence and avoid confident advice when keyframes are insufficient.",
