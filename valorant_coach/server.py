@@ -356,7 +356,12 @@ class CoachHandler(BaseHTTPRequestHandler):
                 match_id = int(parsed.path.split("/")[3])
                 review = build_match_review(DB, match_id)
                 self.json_response({"ok": True, "review": review, "coach": build_coach_dashboard(DB)})
-            elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/guided-coach"):
+            elif parsed.path.startswith("/api/matches/") and (
+                parsed.path.endswith("/guided-coach")
+                or parsed.path.endswith("/guided_coach")
+                or parsed.path.endswith("/coach")
+                or parsed.path.endswith("/coach-me")
+            ):
                 match_id = int(parsed.path.split("/")[3])
                 guided = build_guided_match_coach(DB, match_id)
                 self.json_response({"ok": True, "guided_coach": guided, "coach": build_coach_dashboard(DB)})
