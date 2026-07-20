@@ -27,6 +27,7 @@ from .vision import (
     build_review_queue,
     reconstruct_rounds,
     score_crosshair_match,
+    scan_full_vod_coach_moments,
     suggest_deaths,
     understand_clip,
 )
@@ -357,6 +358,210 @@ def run_auto_coach_pipeline(
     return result
 
 
+def run_full_vod_coach_pipeline(
+    db: Database,
+    match_id: int,
+    dirs: Dict[str, Path],
+    update: Callable[[str, int], None],
+) -> Dict[str, Any]:
+    match = db.get_match(match_id)
+    if not match:
+        raise ValueError(f"Unknown match id: {match_id}")
+    result: Dict[str, Any] = {"match_id": match_id, "steps": []}
+
+    update("Full VOD Coach: scanning the entire video for coachable moments.", 12)
+    scan = scan_full_vod_coach_moments(db, match_id, dirs["vision"])
+    result["steps"].append({"full_vod_scan": scan})
+    analysis = scan.get("analysis") or {}
+    moments = analysis.get("moments") or []
+
+    update("Full VOD Coach: scoring VALORANT-specific focus areas.", 35)
+    ranked = rank_full_vod_moments(db, match_id, moments)
+    result["ranked"] = ranked
+
+    update("Full VOD Coach: checking local vision model configuration.", 48)
+    local_status = local_ai_status(db)
+    result["local_ai"] = {
+        "enabled": local_status["enabled"],
+        "provider": local_status["provider"],
+        "model": local_status["model"],
+        "base_url": local_status["base_url"],
+    }
+
+    reviewed = []
+    if local_status["enabled"]:
+        top = ranked.get("moments", [])[: int(db.get_setting("full_vod_ai_review_limit", "5") or 5)]
+        for index, moment in enumerate(top, start=1):
+            progress = 48 + int((index / max(1, len(top))) * 34)
+            update(f"Full VOD Coach: asking local vision model about moment {index}/{len(top)}.", progress)
+            reviewed.append(run_local_ai_moment_review(db, match_id, moment, local_status))
+    else:
+        result["local_ai"]["message"] = "Local AI is disabled. Configure LM Studio in Advanced: Automation And Tools for visual explanations."
+
+    update("Full VOD Coach: building personal coach memory.", 88)
+    final = build_full_vod_coach_report(db, match_id, ranked, reviewed, local_status)
+    final["id"] = db.save_structured_analysis(match_id, "full_vod_coach", final)
+    result["full_vod_coach"] = final
+
+    update("Full VOD Coach: refreshing review queue and report.", 96)
+    result["review_queue"] = safe_pipeline_call(lambda: build_review_queue(db, match_id))
+    write_markdown_report(db, dirs["reports"], match_id)
+    return result
+
+
+def rank_full_vod_moments(db: Database, match_id: int, moments: List[Dict[str, Any]]) -> Dict[str, Any]:
+    trends = db.build_trends()
+    personal_weights = trends.get("labels") or {}
+    weight_map = {
+        "crosshair_turn_drift": "crosshair too low/wide",
+        "panic_correction_under_pressure": "dry peek",
+        "minimap_pressure_missed": "late rotation / bad timing",
+        "poor_reset_after_contact": "poor reposition after contact",
+    }
+    ranked = []
+    for moment in moments:
+        label = str(moment.get("label") or "")
+        personal_label = weight_map.get(label, label)
+        personal_boost = min(12, int(personal_weights.get(personal_label, 0)) * 3)
+        priority = min(100, int(moment.get("priority") or 0) + personal_boost)
+        item = dict(moment)
+        item["personal_label"] = personal_label
+        item["personal_boost"] = personal_boost
+        item["priority"] = priority
+        ranked.append(item)
+    ranked = sorted(ranked, key=lambda row: row["priority"], reverse=True)
+    focus = {}
+    for item in ranked:
+        label = str(item.get("personal_label") or item.get("label") or "review")
+        focus.setdefault(label, {"label": label, "count": 0, "max_priority": 0})
+        focus[label]["count"] += 1
+        focus[label]["max_priority"] = max(focus[label]["max_priority"], int(item.get("priority") or 0))
+    return {
+        "moments": ranked,
+        "focus": sorted(focus.values(), key=lambda row: (row["count"], row["max_priority"]), reverse=True),
+        "personal_memory": personal_weights,
+    }
+
+
+def run_local_ai_moment_review(
+    db: Database,
+    match_id: int,
+    moment: Dict[str, Any],
+    status: Dict[str, Any],
+) -> Dict[str, Any]:
+    images = []
+    for path_text in (moment.get("context_frame_paths") or [moment.get("frame_path")])[:3]:
+        path = Path(str(path_text or ""))
+        if path.exists():
+            images.append(base64.b64encode(path.read_bytes()).decode("ascii"))
+    prompt = render_moment_prompt(db, match_id, moment)
+    audit = redact_model_request({"keyframes": [{"image_base64": image} for image in images], "prompt": prompt}, status)
+    audit["kind"] = "local_model_moment_audit"
+    audit["match_id"] = match_id
+    audit["timestamp"] = moment.get("timestamp")
+    db.save_structured_analysis(match_id, "local_model_moment_audit", audit)
+    if status["provider"] == "ollama":
+        endpoint = status["base_url"].rstrip("/") + "/api/generate"
+        body: Dict[str, Any] = {"model": status["model"], "prompt": prompt, "stream": False}
+        if images:
+            body["images"] = images
+    else:
+        endpoint = status["base_url"].rstrip("/") + "/chat/completions"
+        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content.extend({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}} for image in images)
+        body = {"model": status["model"], "messages": [{"role": "user", "content": content}], "temperature": 0.2}
+    try:
+        response = post_json(endpoint, body, timeout=120)
+        text = response.get("response") or (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or json.dumps(response)
+        review = parse_moment_review(text, status["provider"], moment)
+    except Exception as exc:
+        review = {
+            "kind": "full_vod_local_ai_review",
+            "status": "failed",
+            "provider": status["provider"],
+            "timestamp": moment.get("timestamp"),
+            "summary": f"Local model review failed: {exc}",
+            "labels": [moment.get("personal_label") or moment.get("label")],
+            "better_play": moment.get("better_play") or "",
+            "confidence": 0.0,
+        }
+    db.save_structured_analysis(match_id, "full_vod_moment_ai_review", review)
+    return review
+
+
+def render_moment_prompt(db: Database, match_id: int, moment: Dict[str, Any]) -> str:
+    match = db.get_match(match_id) or {}
+    profile = db.get_profile()
+    return (
+        "You are a VALORANT VOD coach reviewing local keyframes from one timestamp. "
+        "Return strict JSON with summary, labels, better_play, drill, confidence. "
+        f"Map: {match.get('map') or 'unknown'}. Agent: {match.get('agent') or 'unknown'}. "
+        f"Player rank: {profile.get('rank') or 'unknown'}. Target style: {profile.get('target_style') or 'unknown'}. "
+        f"Timestamp seconds: {moment.get('timestamp')}. Detector label: {moment.get('label')}. "
+        f"Detector reason: {moment.get('reason')}. Suggested better play: {moment.get('better_play')}. "
+        f"Metrics: {json.dumps(moment.get('metrics') or {})}. "
+        "Focus on crosshair placement during turns, angle clearing, movement before contact, minimap timing, and utility/trade discipline. "
+        "Do not invent hidden enemy positions. State uncertainty when the frames are insufficient."
+    )
+
+
+def parse_moment_review(text: str, provider: str, moment: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = {"summary": text}
+    return {
+        "kind": "full_vod_local_ai_review",
+        "status": "completed",
+        "provider": provider,
+        "timestamp": moment.get("timestamp"),
+        "summary": str(parsed.get("summary") or parsed.get("what_happened") or text[:500]),
+        "labels": normalize_text_list(parsed.get("labels") or parsed.get("suggested_labels") or [moment.get("personal_label") or moment.get("label")]),
+        "better_play": str(parsed.get("better_play") or parsed.get("recommendation") or moment.get("better_play") or ""),
+        "drill": str(parsed.get("drill") or ""),
+        "confidence": float(parsed.get("confidence") or moment.get("confidence") or 0.55),
+    }
+
+
+def build_full_vod_coach_report(
+    db: Database,
+    match_id: int,
+    ranked: Dict[str, Any],
+    reviewed: List[Dict[str, Any]],
+    local_status: Dict[str, Any],
+) -> Dict[str, Any]:
+    moments = ranked.get("moments") or []
+    focus = ranked.get("focus") or []
+    reviews_by_ts = {round(float(item.get("timestamp") or 0), 2): item for item in reviewed}
+    enriched = []
+    for moment in moments[:18]:
+        review = reviews_by_ts.get(round(float(moment.get("timestamp") or 0), 2))
+        item = dict(moment)
+        if review and review.get("status") == "completed":
+            item["ai_review"] = review
+            item["reason"] = review.get("summary") or item.get("reason")
+            item["better_play"] = review.get("better_play") or item.get("better_play")
+        enriched.append(item)
+    top_focus = focus[0]["label"] if focus else "full VOD review"
+    result = {
+        "kind": "full_vod_coach",
+        "match_id": match_id,
+        "summary": f"Full VOD Coach found {len(moments)} ranked moment(s). Main focus: {top_focus}.",
+        "moments": enriched,
+        "focus": focus,
+        "local_ai": {
+            "enabled": local_status.get("enabled"),
+            "provider": local_status.get("provider"),
+            "model": local_status.get("model"),
+            "reviewed_moments": len(reviewed),
+        },
+        "next_action": "Review the first three moment markers before death review; they are likely mechanics or decision problems that happened before obvious death events.",
+        "confidence": round(min(0.85, 0.35 + len(moments) * 0.03 + len(reviewed) * 0.04), 2) if moments else 0.0,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    return result
+
+
 def safe_pipeline_call(fn: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
     try:
         return fn()
@@ -683,7 +888,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.9.0-local"
+APP_VERSION = "0.10.0-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -692,6 +897,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "build": "local-dev",
         "schema": db.schema_info(),
         "changelog": [
+            "Full VOD Coach scans whole matches for crosshair, pressure, minimap, and reset moments with optional local vision-model review.",
             "Auto Coach pipeline with high-confidence death promotion, advice generation, and visible job progress.",
             "Persistent jobs, logs, backups, retention, exports, and automation.",
             "Advanced search, playbook editing, correction review, privacy audit, provider registry.",

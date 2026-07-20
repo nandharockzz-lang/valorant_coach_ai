@@ -47,6 +47,7 @@ from .automation import (
     restore_database,
     run_auto_coach_pipeline,
     run_death_batch,
+    run_full_vod_coach_pipeline,
     run_local_ai_review,
     run_match_pipeline,
     save_benchmark_label,
@@ -325,6 +326,13 @@ class CoachHandler(BaseHTTPRequestHandler):
                 job_id = JOBS.start(
                     f"Auto coach match #{match_id}",
                     lambda update, mid=match_id: run_auto_coach_pipeline(DB, mid, PATHS, update),
+                )
+                self.json_response({"ok": True, "job_id": job_id})
+            elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/full-vod-coach"):
+                match_id = int(parsed.path.split("/")[3])
+                job_id = JOBS.start(
+                    f"Full VOD coach match #{match_id}",
+                    lambda update, mid=match_id: run_full_vod_coach_pipeline(DB, mid, PATHS, update),
                 )
                 self.json_response({"ok": True, "job_id": job_id})
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/batch-deaths"):

@@ -495,6 +495,191 @@ def score_crosshair_match(db: Database, match_id: int, work_dir: Path) -> Dict[s
     return {"ok": True, "message": result["summary"], "analysis": result}
 
 
+def scan_full_vod_coach_moments(db: Database, match_id: int, work_dir: Path) -> Dict[str, Any]:
+    match = db.get_match(match_id)
+    if not match:
+        raise ValueError(f"Unknown match id: {match_id}")
+    video_path = Path(match["video_path"])
+    if not video_path.exists():
+        return {"ok": False, "message": "Video file is missing.", "analysis": None}
+    ffmpeg = ffmpeg_path()
+    if not ffmpeg:
+        return {"ok": False, "message": "ffmpeg is required for full-VOD coaching.", "analysis": None}
+
+    frame_dir = work_dir / "full-vod-coach" / f"match-{match_id}"
+    frames = extract_scan_frames(ffmpeg, video_path, frame_dir, fps=full_vod_fps(db))
+    timeline = build_timeline(frames, db.get_calibration())
+    moments = detect_coach_moments(timeline, match)
+    result = {
+        "kind": "full_vod_coach_moments",
+        "summary": f"Found {len(moments)} full-VOD coaching moment(s) from movement, crosshair, pressure, and minimap signals.",
+        "moments": moments,
+        "ranked_focus": rank_moment_focus(moments),
+        "sampled_frames": len(timeline),
+        "confidence": round(min(0.75, 0.25 + len(moments) * 0.05), 2) if moments else 0.0,
+    }
+    db.save_structured_analysis(match_id, "full_vod_coach_moments", result)
+    return {"ok": True, "message": result["summary"], "analysis": result}
+
+
+def full_vod_fps(db: Database) -> str:
+    rate = str(db.get_setting("frame_sample_rate", "standard") or "standard")
+    return {"light": "1/3", "standard": "1", "dense": "2"}.get(rate, "1")
+
+
+def detect_coach_moments(timeline: List[FrameMetrics], match: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw: List[Dict[str, Any]] = []
+    for index, item in enumerate(timeline):
+        previous = timeline[index - 1] if index > 0 else None
+        next_item = timeline[index + 1] if index + 1 < len(timeline) else None
+        turn_score = min(1.0, item.motion * 2.6 + item.crosshair_drift * 3.2)
+        correction_score = min(1.0, item.crosshair_activity * 5.0 + item.crosshair_drift * 2.0)
+        pressure = min(1.0, item.pressure_score + item.killfeed_red * 0.3 + item.center_red * 0.2)
+        minimap_change = min(1.0, item.minimap_motion * 3.0 + item.minimap_activity * 0.7)
+
+        if turn_score >= 0.50 and correction_score >= 0.42:
+            raw.append(
+                coach_moment(
+                    item,
+                    "crosshair_turn_drift",
+                    "Crosshair drift during a turn",
+                    "Your view turns quickly and the crosshair region changes heavily. In VALORANT this often means the crosshair is chasing the angle instead of arriving pre-placed.",
+                    "During rotations and clears, move the crosshair to the next likely head-height angle before the body fully commits.",
+                    turn_score * 0.55 + correction_score * 0.45,
+                    match,
+                    previous,
+                    next_item,
+                )
+            )
+        if pressure >= 0.55 and correction_score >= 0.45:
+            raw.append(
+                coach_moment(
+                    item,
+                    "panic_correction_under_pressure",
+                    "High correction load during contact",
+                    "Combat-pressure signals overlap with a busy crosshair region. This is a candidate for rushed target correction or fighting before pre-aim was ready.",
+                    "Pause this moment and check whether the crosshair was already on the likely contact point before the opponent appeared.",
+                    pressure * 0.50 + correction_score * 0.50,
+                    match,
+                    previous,
+                    next_item,
+                )
+            )
+        if minimap_change >= 0.45 and pressure >= 0.42:
+            raw.append(
+                coach_moment(
+                    item,
+                    "minimap_pressure_missed",
+                    "Possible minimap timing cue",
+                    "The minimap region changes while the screen also shows pressure. This is a candidate for missed map information before the fight or rotate.",
+                    "Check the minimap two seconds before this timestamp and decide if the safer play was hold, rotate, or wait for support.",
+                    minimap_change * 0.45 + pressure * 0.55,
+                    match,
+                    previous,
+                    next_item,
+                )
+            )
+        if previous and previous.pressure_score >= 0.48 and item.motion >= 0.18 and item.crosshair_drift >= 0.10:
+            raw.append(
+                coach_moment(
+                    item,
+                    "poor_reset_after_contact",
+                    "Messy reset after contact",
+                    "The frames immediately after pressure show movement and crosshair drift. This can indicate repeeking, panic movement, or not resetting the fight cleanly.",
+                    "After first contact, break line of sight or change the fight condition before taking the next duel.",
+                    min(1.0, previous.pressure_score * 0.4 + item.motion * 1.5 + item.crosshair_drift * 2.0),
+                    match,
+                    previous,
+                    next_item,
+                )
+            )
+    return cluster_coach_moments(raw)
+
+
+def coach_moment(
+    item: FrameMetrics,
+    label: str,
+    title: str,
+    reason: str,
+    better_play: str,
+    score: float,
+    match: Dict[str, Any],
+    previous: Optional[FrameMetrics],
+    next_item: Optional[FrameMetrics],
+) -> Dict[str, Any]:
+    confidence = round(max(0.35, min(0.92, score)), 2)
+    return {
+        "timestamp": item.timestamp,
+        "label": label,
+        "title": title,
+        "reason": reason,
+        "better_play": better_play,
+        "priority": int(confidence * 100),
+        "confidence": confidence,
+        "frame_path": str(item.path.resolve()),
+        "context_frame_paths": [
+            str(frame.path.resolve())
+            for frame in (previous, item, next_item)
+            if frame is not None
+        ],
+        "valorant_context": {
+            "map": match.get("map") or "unknown",
+            "agent": match.get("agent") or "unknown",
+            "role_hint": role_hint(str(match.get("agent") or "")),
+        },
+        "metrics": {
+            "motion": round(item.motion, 3),
+            "crosshair_activity": round(item.crosshair_activity, 3),
+            "crosshair_drift": round(item.crosshair_drift, 3),
+            "pressure_score": round(item.pressure_score, 3),
+            "minimap_motion": round(item.minimap_motion, 3),
+            "killfeed_red": round(item.killfeed_red, 3),
+        },
+    }
+
+
+def cluster_coach_moments(items: List[Dict[str, Any]], gap_seconds: float = 10.0, limit: int = 18) -> List[Dict[str, Any]]:
+    if not items:
+        return []
+    items = sorted(items, key=lambda row: (row["timestamp"], -row["priority"]))
+    clustered: List[Dict[str, Any]] = []
+    for item in items:
+        if not clustered or item["timestamp"] - clustered[-1]["timestamp"] > gap_seconds:
+            clustered.append(item)
+            continue
+        current = clustered[-1]
+        if item["priority"] > current["priority"]:
+            clustered[-1] = item
+        elif item["label"] != current["label"]:
+            current.setdefault("secondary_labels", []).append(item["label"])
+            current["reason"] = f"{current['reason']} Also flagged: {item['title'].lower()}."
+            current["priority"] = min(100, current["priority"] + 3)
+    return sorted(clustered, key=lambda row: row["priority"], reverse=True)[:limit]
+
+
+def rank_moment_focus(moments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    counts: Dict[str, Dict[str, Any]] = {}
+    for moment in moments:
+        label = str(moment.get("label") or "review")
+        row = counts.setdefault(label, {"label": label, "count": 0, "priority": 0})
+        row["count"] += 1
+        row["priority"] = max(row["priority"], int(moment.get("priority") or 0))
+    return sorted(counts.values(), key=lambda row: (row["count"], row["priority"]), reverse=True)
+
+
+def role_hint(agent: str) -> str:
+    agent = agent.lower()
+    if agent in {"jett", "raze", "reyna", "phoenix", "neon", "yoru", "iso"}:
+        return "duelist: first-contact spacing, pre-aim, escape route, and trade timing matter heavily"
+    if agent in {"omen", "brimstone", "viper", "astra", "harbor", "clove"}:
+        return "controller: smoke timing, map control, and supported rotates matter heavily"
+    if agent in {"sova", "fade", "breach", "skye", "kayo", "gekko"}:
+        return "initiator: info utility before contact and teammate timing matter heavily"
+    if agent in {"cypher", "killjoy", "sage", "chamber", "deadlock", "vyse"}:
+        return "sentinel: info discipline, anchor positioning, and safe re-peeks matter heavily"
+    return "unknown role: focus on crosshair placement, trade spacing, utility timing, and map awareness"
+
+
 def crosshair_summary(stability: float, unstable: int, total: int) -> str:
     if stability >= 0.70:
         return f"Crosshair region looked relatively stable across {total} sampled frames."
@@ -639,7 +824,7 @@ def build_review_queue(db: Database, match_id: int) -> Dict[str, Any]:
     suggestions = db.get_death_suggestions(match_id)
     analyses = {
         name: db.get_latest_structured_analysis("match", match_id, name)
-        for name in ("death_events_v2", "crosshair", "minimap", "ocr", "round_timeline")
+        for name in ("death_events_v2", "crosshair", "minimap", "ocr", "round_timeline", "full_vod_coach")
     }
     items: List[Dict[str, Any]] = []
     for death in deaths:
@@ -690,6 +875,19 @@ def build_review_queue(db: Database, match_id: int) -> Dict[str, Any]:
                 "title": "Review crosshair stability",
                 "reason": crosshair_payload.get("summary") or "crosshair score below target",
                 "action": "Inspect key deaths for pre-aim and correction load.",
+            }
+        )
+    full_vod_payload = (analyses.get("full_vod_coach") or {}).get("payload") or {}
+    for moment in (full_vod_payload.get("moments") or [])[:6]:
+        items.append(
+            {
+                "kind": "coach_moment",
+                "priority": int(moment.get("priority") or 0),
+                "timestamp": moment.get("timestamp"),
+                "round_phase": round_phase(rounds, moment.get("timestamp")),
+                "title": moment.get("title") or "Full VOD coach moment",
+                "reason": moment.get("reason") or moment.get("label") or "full VOD signal",
+                "action": moment.get("better_play") or "Review this timestamp before death review.",
             }
         )
     items = sorted(items, key=lambda item: item["priority"], reverse=True)[:12]

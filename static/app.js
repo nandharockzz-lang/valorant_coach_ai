@@ -241,7 +241,10 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
       <label>Model <input id="localAiModel" type="text" value="${escapeAttr(localAi.model || "")}" placeholder="llava" /></label>
       <label>Base URL <input id="localAiBaseUrl" type="text" value="${escapeAttr(localAi.base_url || "")}" placeholder="http://127.0.0.1:11434" /></label>
       <label>Custom command <input id="localAiCommand" type="text" value="${escapeAttr(localAi.command || "")}" placeholder="python C:\\path\\review_clip.py" /></label>
-      <button class="secondary" data-action="save-local-ai">Save Local AI</button>
+      <div class="row">
+        <button class="secondary" data-action="use-lmstudio-defaults">Use LM Studio Defaults</button>
+        <button class="secondary" data-action="save-local-ai">Save Local AI</button>
+      </div>
       <p class="muted">${escapeHtml(localAi.expected_protocol || "")}</p>
     </div>
     <div class="automation-block">
@@ -526,6 +529,18 @@ async function saveLocalAiConfig() {
   await api("/api/local-ai/config", { method: "POST", body: JSON.stringify(payload) });
   setStatus("Local AI settings saved.");
   await loadAutomation();
+}
+
+function useLmStudioDefaults() {
+  const provider = document.querySelector("#localAiProvider");
+  const model = document.querySelector("#localAiModel");
+  const baseUrl = document.querySelector("#localAiBaseUrl");
+  const command = document.querySelector("#localAiCommand");
+  if (provider) provider.value = "lmstudio";
+  if (baseUrl) baseUrl.value = "http://127.0.0.1:1234/v1";
+  if (model && !model.value) model.value = "local-model";
+  if (command) command.value = "";
+  setStatus("LM Studio defaults filled. If LM Studio shows a specific model ID, paste it into Model before saving.");
 }
 
 async function saveSetupWizard() {
@@ -820,6 +835,18 @@ async function startAutoCoach(id) {
   ensureJobPolling();
 }
 
+async function startFullVodCoach(id) {
+  currentMatchId = id;
+  activeCoachJobId = null;
+  setStatus(`Full VOD Coach queued for match #${id}...`);
+  const payload = await api(`/api/matches/${id}/full-vod-coach`, { method: "POST" });
+  activeCoachJobId = payload.job_id;
+  completedJobIds.delete(Number(payload.job_id));
+  setStatus(`Full VOD Coach running as job #${payload.job_id}.`);
+  await Promise.all([loadReport(id), pollJobs()]);
+  ensureJobPolling();
+}
+
 async function startDeathBatch(id) {
   const payload = await api(`/api/matches/${id}/batch-deaths`, { method: "POST" });
   setStatus(`Death batch queued as job #${payload.job_id}.`);
@@ -841,7 +868,7 @@ async function pollJobs() {
   const activeJob = activeCoachJobId ? latestJobs.find((job) => Number(job.id) === Number(activeCoachJobId)) : null;
   if (activeJob && ["complete", "failed", "cancelled"].includes(activeJob.status) && !completedJobIds.has(Number(activeJob.id))) {
     completedJobIds.add(Number(activeJob.id));
-    setStatus(activeJob.status === "complete" ? "Auto Coach complete. Review markers and advice are refreshed." : `Auto Coach ${activeJob.status}: ${activeJob.message || ""}`);
+    setStatus(activeJob.status === "complete" ? "Coach job complete. Review markers and advice are refreshed." : `Coach job ${activeJob.status}: ${activeJob.message || ""}`);
     if (currentMatchId) {
       await Promise.all([loadMatches(), loadReport(currentMatchId), loadTrends(), loadCoach()]);
     }
@@ -1036,6 +1063,7 @@ async function loadMatches() {
         <div class="match-primary-actions">
           <button data-action="view" data-id="${match.id}">Review</button>
           <button data-action="auto-coach" data-id="${match.id}">Auto Coach</button>
+          <button class="secondary" data-action="full-vod-coach" data-id="${match.id}">Full VOD Coach</button>
           <button class="secondary" data-action="analyze" data-id="${match.id}">Analyze</button>
           <button class="secondary" data-action="suggest" data-id="${match.id}">Find Deaths</button>
           <button class="ghost" data-action="guided-coach" data-id="${match.id}">Coach Me</button>
@@ -1233,7 +1261,9 @@ function renderReport(report) {
   const review = renderMatchReview(report.review);
   const guidedCoach = renderGuidedCoach(report.guided_coach, match.id);
   const suggestions = renderSuggestions(report.suggestions || []);
-  const timeline = renderVideoTimeline(report.deaths || [], report.suggestions || []);
+  const coachMoments = (((report.match_analyses || {}).full_vod_coach || {}).payload || {}).moments || [];
+  const timeline = renderVideoTimeline(report.deaths || [], report.suggestions || [], coachMoments);
+  const coachMomentsView = renderCoachMoments(coachMoments);
   const matchAnalyses = renderMatchAnalyses(report.match_analyses || {});
   const jobPanel = renderJobProgress(report.match.id);
 
@@ -1254,6 +1284,7 @@ function renderReport(report) {
       </div>
       ${timeline}
     </section>
+    ${coachMomentsView}
     <section>
       <h3>Add Death Marker</h3>
       <div class="add-death">
@@ -1340,12 +1371,12 @@ function renderJobProgressPanel() {
 }
 
 function findVisibleCoachJob(matchId) {
-  const targetName = `Auto coach match #${matchId}`;
+  const targetNames = [`Auto coach match #${matchId}`, `Full VOD coach match #${matchId}`];
   if (activeCoachJobId) {
     const active = latestJobs.find((job) => Number(job.id) === Number(activeCoachJobId));
     if (active) return active;
   }
-  return latestJobs.find((job) => String(job.name || "").toLowerCase() === targetName.toLowerCase()) || null;
+  return latestJobs.find((job) => targetNames.some((name) => String(job.name || "").toLowerCase() === name.toLowerCase())) || null;
 }
 
 function renderMatchAnalyses(analyses) {
@@ -1360,7 +1391,7 @@ function renderMatchAnalyses(analyses) {
   }
   const cards = entries.map(([type, row]) => {
     const payload = row.payload || {};
-    const reads = (payload.reads || payload.candidates || payload.rounds || payload.items || payload.timeline_events || [])
+    const reads = (payload.reads || payload.candidates || payload.rounds || payload.items || payload.moments || payload.timeline_events || [])
       .slice(0, 6)
       .map((item) => `<li>${escapeHtml(formatAnalysisItem(item))}</li>`)
       .join("");
@@ -1402,7 +1433,7 @@ function formatAnalysisItem(item) {
   return JSON.stringify(item);
 }
 
-function renderVideoTimeline(deaths, suggestions) {
+function renderVideoTimeline(deaths, suggestions, coachMoments = []) {
   const points = [
     ...deaths
       .filter((item) => item.timestamp !== null && item.timestamp !== undefined)
@@ -1418,9 +1449,16 @@ function renderVideoTimeline(deaths, suggestions) {
         timestamp: Number(item.timestamp),
         label: `Suggested death @ ${formatTs(item.timestamp)} (${Math.round(Number(item.confidence || 0) * 100)}%)`,
       })),
+    ...coachMoments
+      .filter((item) => item.timestamp !== null && item.timestamp !== undefined)
+      .map((item) => ({
+        kind: "coach",
+        timestamp: Number(item.timestamp),
+        label: `${item.title || "Coach moment"} @ ${formatTs(item.timestamp)} (${Math.round(Number(item.confidence || 0) * 100)}%)`,
+      })),
   ].filter((item) => Number.isFinite(item.timestamp));
   if (!points.length) {
-    return '<p class="muted">No video markers yet. Run Find Deaths or add a death marker.</p>';
+    return '<p class="muted">No video markers yet. Run Auto Coach, Full VOD Coach, Find Deaths, or add a death marker.</p>';
   }
   const maxTs = Math.max(60, ...points.map((item) => item.timestamp));
   const markers = points
@@ -1444,9 +1482,47 @@ function renderVideoTimeline(deaths, suggestions) {
       <div class="timeline-legend">
         <span><i class="death"></i>Marked death</span>
         <span><i class="suggestion"></i>Suggested death</span>
+        <span><i class="coach"></i>Coach moment</span>
         <span>${points.length} marker(s)</span>
       </div>
     </div>
+  `;
+}
+
+function renderCoachMoments(moments) {
+  if (!moments.length) {
+    return `
+      <section>
+        <h3>Coach Moments</h3>
+        <p class="muted">Run Full VOD Coach to find mechanics and decision moments outside obvious deaths.</p>
+      </section>
+    `;
+  }
+  const cards = moments.slice(0, 10).map((item, index) => {
+    const ai = item.ai_review || {};
+    const labels = renderTags([item.personal_label || item.label].concat(item.secondary_labels || []).filter(Boolean));
+    return `
+      <article class="coach-moment-card">
+        <div class="coach-moment-head">
+          <button class="ghost" data-action="jump" data-ts="${escapeAttr(item.timestamp || 0)}">${formatTs(item.timestamp)}</button>
+          <div>
+            <strong>${index + 1}. ${escapeHtml(item.title || "Coach moment")}</strong>
+            <p class="muted">${escapeHtml(item.valorant_context?.map || "unknown map")} / ${escapeHtml(item.valorant_context?.agent || "unknown agent")} · priority ${escapeHtml(item.priority || 0)}</p>
+          </div>
+        </div>
+        <p>${escapeHtml(ai.summary || item.reason || "")}</p>
+        <p><strong>Better play:</strong> ${escapeHtml(ai.better_play || item.better_play || "")}</p>
+        ${ai.drill ? `<p><strong>Drill:</strong> ${escapeHtml(ai.drill)}</p>` : ""}
+        <div>${labels}</div>
+      </article>
+    `;
+  }).join("");
+  return `
+    <section>
+      <h3>Coach Moments</h3>
+      <p class="muted">These are non-death review points from full-match scanning. Start with the first three before reviewing deaths.</p>
+      <div class="coach-moment-list">${cards}</div>
+    </section>
   `;
 }
 
@@ -2050,6 +2126,7 @@ els.automationView.addEventListener("click", (event) => {
   if (action === "save-playbook") savePlaybook().catch((err) => setStatus(err.message));
   if (action === "delete-playbook") deletePlaybookFromEditor().catch((err) => setStatus(err.message));
   if (action === "apply-correction") applyCorrection(button.dataset.id).catch((err) => setStatus(err.message));
+  if (action === "use-lmstudio-defaults") useLmStudioDefaults();
   if (action === "save-local-ai") saveLocalAiConfig().catch((err) => setStatus(err.message));
   if (action === "load-prompt") loadPromptEditor();
   if (action === "save-prompt") savePromptTemplate().catch((err) => setStatus(err.message));
@@ -2075,6 +2152,7 @@ els.matchesList.addEventListener("click", (event) => {
   if (action === "view") loadReport(id).catch((err) => setStatus(err.message));
   if (action === "save-match-metadata") saveMatchMetadata(button).catch((err) => setStatus(err.message));
   if (action === "auto-coach") startAutoCoach(id).catch((err) => setStatus(err.message));
+  if (action === "full-vod-coach") startFullVodCoach(id).catch((err) => setStatus(err.message));
   if (action === "guided-coach") runGuidedCoach(id).catch((err) => setStatus(err.message));
   if (action === "pipeline") startPipeline(id).catch((err) => setStatus(err.message));
   if (action === "batch-deaths") startDeathBatch(id).catch((err) => setStatus(err.message));
