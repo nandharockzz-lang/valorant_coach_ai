@@ -44,8 +44,38 @@ const LABEL_PRESETS = [
   "utility unused before taking space",
 ];
 
-function setStatus(message) {
-  els.status.textContent = message;
+function setStatus(message, options = {}) {
+  const state = options.state || inferStatusState(message);
+  const progress = normalizeProgress(options.progress);
+  els.status.className = `status ${state}`;
+  els.status.setAttribute("aria-busy", state === "busy" ? "true" : "false");
+  els.status.innerHTML = `
+    ${state === "busy" ? '<span class="status-spinner" aria-hidden="true"></span>' : '<span class="status-dot" aria-hidden="true"></span>'}
+    <span class="status-text">${escapeHtml(message || "Ready.")}</span>
+    ${progress !== null ? `<span class="status-progress">${progress}%</span>` : ""}
+  `;
+}
+
+function inferStatusState(message) {
+  const text = String(message || "").toLowerCase();
+  if (text.endsWith("...") || text.includes(" queued") || text.includes(" running") || text.includes("scanning") || text.includes("analyzing") || text.includes("generating") || text.includes("extracting") || text.includes("importing")) {
+    return "busy";
+  }
+  if (text.includes("failed") || text.includes("error") || text.includes("not found")) {
+    return "error";
+  }
+  return "idle";
+}
+
+function normalizeProgress(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  const number = Math.round(Number(value));
+  if (!Number.isFinite(number)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, number));
 }
 
 async function api(path, options = {}) {
@@ -945,9 +975,15 @@ async function pollJobs() {
   renderJobProgressPanel();
   const running = latestJobs.some((job) => ["queued", "running"].includes(job.status));
   const activeJob = activeCoachJobId ? latestJobs.find((job) => Number(job.id) === Number(activeCoachJobId)) : null;
+  const visibleJob = activeJob || latestJobs.find((job) => ["queued", "running"].includes(job.status));
+  if (visibleJob && ["queued", "running"].includes(visibleJob.status)) {
+    const label = visibleJob.name || `Job #${visibleJob.id}`;
+    const message = visibleJob.message || visibleJob.status || "Running.";
+    setStatus(`${label}: ${message}`, { state: "busy", progress: visibleJob.progress });
+  }
   if (activeJob && ["complete", "failed", "cancelled"].includes(activeJob.status) && !completedJobIds.has(Number(activeJob.id))) {
     completedJobIds.add(Number(activeJob.id));
-    setStatus(activeJob.status === "complete" ? "Coach job complete. Review markers and advice are refreshed." : `Coach job ${activeJob.status}: ${activeJob.message || ""}`);
+    setStatus(activeJob.status === "complete" ? "Coach job complete. Review markers and advice are refreshed." : `Coach job ${activeJob.status}: ${activeJob.message || ""}`, { state: activeJob.status === "complete" ? "idle" : "error" });
     if (currentMatchId) {
       await Promise.all([loadMatches(), loadReport(currentMatchId), loadTrends(), loadCoach()]);
     }
@@ -2445,9 +2481,14 @@ els.reportView.addEventListener("pointerdown", startCalibrationDrag);
 window.addEventListener("pointermove", moveCalibrationDrag);
 window.addEventListener("pointerup", stopCalibrationDrag);
 
+setStatus("Loading app...", { state: "busy" });
 loadSettings()
   .then(() => Promise.all([loadVersionBadge(), loadMatches(), loadTrends(), loadCoach(), loadCapabilities(), loadCalibration(), loadAutomation()]))
   .then(() => {
-    if (latestJobs.some((job) => ["queued", "running"].includes(job.status))) ensureJobPolling();
+    if (latestJobs.some((job) => ["queued", "running"].includes(job.status))) {
+      ensureJobPolling();
+    } else {
+      setStatus("Ready.", { state: "idle" });
+    }
   })
   .catch((err) => setStatus(err.message));
