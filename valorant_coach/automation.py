@@ -24,6 +24,7 @@ from .deep_analysis import tesseract_path
 from .vision import (
     analyze_match_events,
     build_keyframe_gallery,
+    build_local_ai_review_sequence,
     build_review_queue,
     reconstruct_rounds,
     score_crosshair_match,
@@ -937,7 +938,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.10.6-local"
+APP_VERSION = "0.10.7-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -948,6 +949,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Send a dense 10-second pre-death frame sequence to local vision models instead of only a few keyframes.",
             "Ground local vision-model reviews with ordered setup, pre-contact, pressure, correction, death, and aftermath keyframes.",
             "Ask local models to cite visible evidence and avoid confident advice when keyframes are insufficient.",
             "Add local model purpose modes and an olmOCR LM Studio preset for OCR/HUD extraction.",
@@ -1532,11 +1534,14 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
         }
         db.save_death_analysis(death_id, "local_ai_review", result)
         return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
+    sequence = build_local_ai_review_sequence(db, death_id, db.path.parent / "vision")
+    if not sequence.get("ok"):
+        return {"ok": False, "message": sequence.get("message") or "Could not prepare local AI review sequence.", "status": status}
     request = {
         "death": death,
         "annotations": death.get("annotations") or [],
         "clip_path": death.get("clip_path"),
-        "keyframes": keyframe_payload(db, death_id),
+        "keyframes": keyframe_payload(db, death_id, analysis_type="local_ai_sequence", limit=24),
         "prompt": render_model_prompt(db, death),
         "privacy": "local-only",
     }
@@ -1589,16 +1594,18 @@ def default_model(provider: str) -> str:
     }.get(provider, "")
 
 
-def keyframe_payload(db: Database, death_id: int) -> List[Dict[str, Any]]:
-    latest = db.get_latest_structured_analysis("death", death_id, "keyframes")
+def keyframe_payload(db: Database, death_id: int, analysis_type: str = "keyframes", limit: int = 6) -> List[Dict[str, Any]]:
+    latest = db.get_latest_structured_analysis("death", death_id, analysis_type)
     frames = ((latest or {}).get("payload") or {}).get("frames") or []
     encoded = []
-    for index, item in enumerate(frames[:6], start=1):
+    for index, item in enumerate(frames[:limit], start=1):
         frame_id = str(item.get("frame_id") or "")
         path = find_frame_path(db.path.parent, frame_id)
         payload = {key: item.get(key) for key in ("role", "timestamp", "reason")}
         payload["index"] = index
+        payload["sequence_index"] = item.get("sequence_index")
         payload["relative_second"] = item.get("relative_second")
+        payload["seconds_before_death"] = item.get("seconds_before_death")
         payload["caption"] = keyframe_caption(payload)
         payload["frame_id"] = frame_id
         if path and path.exists():
@@ -1611,9 +1618,11 @@ def keyframe_caption(item: Dict[str, Any]) -> str:
     role = str(item.get("role") or "frame")
     ts = item.get("timestamp")
     rel = item.get("relative_second")
-    pieces = [f"Frame {item.get('index')}: {role}"]
+    pieces = [f"Frame {item.get('sequence_index') or item.get('index')}: {role}"]
     if rel is not None:
-        pieces.append(f"relative +{rel}s in the review window")
+        pieces.append(f"relative +{rel}s in the review sequence")
+    if item.get("seconds_before_death") is not None:
+        pieces.append(f"{item.get('seconds_before_death')}s before death")
     if ts is not None:
         pieces.append(f"VOD timestamp {ts}s")
     if item.get("reason"):
@@ -1645,7 +1654,8 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
     )
     return (
         base
-        + "\n\nYou will receive labeled keyframes from a short window around this marker. "
+        + "\n\nYou will receive an ordered frame sequence sampled across the full 10 seconds before this death marker. "
+        "Treat the images as a short local video clip in chronological order. Track crosshair movement, clearing path, movement while aiming, minimap/HUD changes, and fight setup over time. "
         "Use only visible evidence from those frames. Do not assume enemy positions, player intent, comms, utility usage, or the outcome unless visible. "
         "If the frames do not prove a claim, write 'insufficient visual evidence' and reduce confidence. "
         "Return strict JSON with keys: summary, visible_evidence, labels, better_play, drill, confidence."
@@ -1655,7 +1665,7 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
 def render_ocr_model_prompt(death: Dict[str, Any]) -> str:
     labels = ", ".join(death.get("mistake_labels") or []) or "unlabeled"
     return (
-        "You are reading VALORANT VOD keyframes as a local OCR/HUD extraction model. "
+        "You are reading an ordered VALORANT VOD frame sequence as a local OCR/HUD extraction model. "
         "Focus on visible text and HUD elements only. Do not invent gameplay coaching. "
         "Return strict JSON with keys: summary, extracted_text, scoreboard, labels, better_play, confidence. "
         "scoreboard should include left_score, right_score, inferred_round if visible. "
@@ -1676,7 +1686,7 @@ def run_local_http_review(db: Database, death_id: int, payload: Dict[str, Any], 
     if provider == "ollama":
         endpoint = status["base_url"].rstrip("/") + "/api/generate"
         manifest = "\n".join(item.get("caption") or "" for item in payload.get("keyframes") or [])
-        body = {"model": status["model"], "prompt": local_model_system_prompt(status) + "\n\n" + prompt + "\n\nKeyframes:\n" + manifest, "stream": False}
+        body = {"model": status["model"], "prompt": local_model_system_prompt(status) + "\n\n" + prompt + "\n\nOrdered frames:\n" + manifest, "stream": False}
         if images:
             body["images"] = images
     else:
@@ -1694,7 +1704,7 @@ def run_local_http_review(db: Database, death_id: int, payload: Dict[str, Any], 
                 {"role": "user", "content": content},
             ],
             "temperature": 0.1,
-            "max_tokens": 700,
+            "max_tokens": 900,
         }
     try:
         response = post_json(endpoint, body, timeout=120)
@@ -1752,10 +1762,11 @@ def local_model_system_prompt(status: Dict[str, Any]) -> str:
             "Return strict compact JSON. Do not provide tactical advice unless directly supported by visible HUD text."
         )
     return (
-        "You are a VALORANT VOD coach reviewing local keyframes. "
+        "You are a VALORANT VOD coach reviewing an ordered local frame sequence from the 10 seconds before a death. "
         "Return strict compact JSON with summary, visible_evidence, labels, better_play, drill, confidence. "
+        "Analyze how the player clears, moves, aims, checks HUD/minimap, and enters the fight across time. "
         "Use only visible frame evidence. Do not invent hidden enemies, comms, unseen utility, prior context, or player intent. "
-        "If the frames are insufficient, say 'insufficient visual evidence' and set confidence below 0.45."
+        "If the sequence is visually insufficient, say 'insufficient visual evidence' and set confidence below 0.45."
     )
 
 

@@ -774,6 +774,136 @@ def build_keyframe_gallery(db: Database, death_id: int, work_dir: Path) -> Dict[
     return {"ok": True, "message": result["summary"], "analysis": result}
 
 
+def build_local_ai_review_sequence(
+    db: Database,
+    death_id: int,
+    work_dir: Path,
+    seconds_before: float = 10.0,
+    fps: int = 2,
+) -> Dict[str, Any]:
+    death = db.get_death(death_id)
+    if not death:
+        raise ValueError(f"Unknown death id: {death_id}")
+    source_info = local_ai_sequence_source(db, death, seconds_before)
+    if not source_info:
+        return {
+            "ok": False,
+            "message": "A full VOD death timestamp or extracted clip is required for local AI sequence review.",
+            "analysis": None,
+        }
+    source = source_info["source"]
+    if not source.exists():
+        return {"ok": False, "message": "Video source is missing.", "analysis": None}
+    ffmpeg = ffmpeg_path()
+    if not ffmpeg:
+        return {"ok": False, "message": "ffmpeg is required for local AI sequence extraction.", "analysis": None}
+
+    frame_dir = work_dir / "local-ai-sequences" / f"death-{death_id}"
+    frames = extract_sequence_frames(ffmpeg, source, frame_dir, float(source_info["start"]), float(source_info["duration"]), fps)
+    if not frames:
+        return {"ok": False, "message": "No frames could be extracted for the 10-second local AI sequence.", "analysis": None}
+    timeline = build_timeline(frames, db.get_calibration())
+    if not timeline:
+        return {"ok": False, "message": "No readable frames were available for local AI sequence review.", "analysis": None}
+    sequence = []
+    for index, item in enumerate(timeline, start=1):
+        stem = f"localai-death-{death_id}-{index:02d}"
+        target = frame_dir / f"{stem}.jpg"
+        shutil.copyfile(item.path, target)
+        relative_second = round((index - 1) / float(fps), 2)
+        timestamp = None
+        if source_info.get("vod_timestamp_start") is not None:
+            timestamp = round(float(source_info["vod_timestamp_start"]) + relative_second, 2)
+        sequence.append(
+            {
+                "role": "pre-death-sequence",
+                "sequence_index": index,
+                "frame_id": stem,
+                "timestamp": timestamp if timestamp is not None else relative_second,
+                "relative_second": relative_second,
+                "seconds_before_death": round(max(0.0, float(source_info["duration"]) - relative_second), 2),
+                "reason": item.reason,
+                "metrics": {
+                    "death_score": round(item.death_score, 3),
+                    "pressure_score": round(item.pressure_score, 3),
+                    "motion": round(item.motion, 3),
+                    "crosshair_activity": round(item.crosshair_activity, 3),
+                    "crosshair_drift": round(item.crosshair_drift, 3),
+                    "minimap_motion": round(item.minimap_motion, 3),
+                },
+            }
+        )
+    result = {
+        "kind": "local_ai_sequence",
+        "death_id": death_id,
+        "summary": f"Prepared {len(sequence)} ordered frame(s) from the {seconds_before:g} seconds before death.",
+        "frames": sequence,
+        "fps": fps,
+        "seconds_before": seconds_before,
+        "source": source_info["kind"],
+        "confidence": 0.65 if sequence else 0.0,
+    }
+    db.save_death_analysis(death_id, "local_ai_sequence", result)
+    return {"ok": True, "message": result["summary"], "analysis": result}
+
+
+def local_ai_sequence_source(db: Database, death: Dict[str, Any], seconds_before: float) -> Optional[Dict[str, Any]]:
+    timestamp = death.get("timestamp")
+    match = db.get_match(int(death["match_id"])) if death.get("match_id") else None
+    if match and timestamp is not None:
+        video_path = Path(match["video_path"])
+        if video_path.exists():
+            start = max(0.0, float(timestamp) - seconds_before)
+            return {
+                "kind": "full-vod",
+                "source": video_path,
+                "start": start,
+                "duration": min(seconds_before, float(timestamp)),
+                "vod_timestamp_start": start,
+            }
+    clip_path = death.get("clip_path")
+    if clip_path and Path(clip_path).exists():
+        return {
+            "kind": "clip",
+            "source": Path(clip_path),
+            "start": 5.0,
+            "duration": seconds_before,
+            "vod_timestamp_start": None,
+        }
+    return None
+
+
+def extract_sequence_frames(ffmpeg: str, source: Path, frame_dir: Path, start: float, duration: float, fps: int) -> List[Path]:
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    for old in frame_dir.glob("sequence-*.jpg"):
+        old.unlink()
+    for old in frame_dir.glob("localai-death-*.jpg"):
+        old.unlink()
+    output_pattern = str(frame_dir / "sequence-%06d.jpg")
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        f"{max(0.0, start):.2f}",
+        "-i",
+        str(source),
+        "-t",
+        f"{max(0.5, duration):.2f}",
+        "-vf",
+        f"fps={fps},scale=512:-1",
+        "-q:v",
+        "5",
+        output_pattern,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "ffmpeg local AI sequence extraction failed")
+    return sorted(frame_dir.glob("sequence-*.jpg"))
+
+
 def extract_keyframe_source(ffmpeg: str, source: Path, frame_dir: Path, timestamp: Optional[float]) -> List[Path]:
     frame_dir.mkdir(parents=True, exist_ok=True)
     for old in frame_dir.glob("scan-*.jpg"):
