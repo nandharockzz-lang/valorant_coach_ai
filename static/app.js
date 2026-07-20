@@ -17,6 +17,10 @@ const els = {
 };
 
 let currentMatchId = null;
+let latestJobs = [];
+let activeCoachJobId = null;
+let jobPollTimer = null;
+const completedJobIds = new Set();
 let currentCalibration = {};
 const CALIBRATION_REGIONS = [
   ["hud_top", "Top HUD"],
@@ -111,6 +115,8 @@ async function loadAutomation() {
     modelAudit,
     sessionReport
   );
+  latestJobs = jobs.jobs || [];
+  renderJobProgressPanel();
 }
 
 function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, setup, prompts, tuning, modelAudit, sessionReport) {
@@ -802,10 +808,48 @@ async function startPipeline(id) {
   await loadAutomation();
 }
 
+async function startAutoCoach(id) {
+  currentMatchId = id;
+  activeCoachJobId = null;
+  setStatus(`Auto Coach queued for match #${id}...`);
+  const payload = await api(`/api/matches/${id}/auto-coach`, { method: "POST" });
+  activeCoachJobId = payload.job_id;
+  completedJobIds.delete(Number(payload.job_id));
+  setStatus(`Auto Coach running as job #${payload.job_id}.`);
+  await Promise.all([loadReport(id), pollJobs()]);
+  ensureJobPolling();
+}
+
 async function startDeathBatch(id) {
   const payload = await api(`/api/matches/${id}/batch-deaths`, { method: "POST" });
   setStatus(`Death batch queued as job #${payload.job_id}.`);
   await loadAutomation();
+}
+
+function ensureJobPolling() {
+  if (jobPollTimer) return;
+  jobPollTimer = window.setInterval(() => {
+    pollJobs().catch((err) => setStatus(err.message));
+  }, 1500);
+}
+
+async function pollJobs() {
+  const payload = await api("/api/jobs");
+  latestJobs = payload.jobs || [];
+  renderJobProgressPanel();
+  const running = latestJobs.some((job) => ["queued", "running"].includes(job.status));
+  const activeJob = activeCoachJobId ? latestJobs.find((job) => Number(job.id) === Number(activeCoachJobId)) : null;
+  if (activeJob && ["complete", "failed", "cancelled"].includes(activeJob.status) && !completedJobIds.has(Number(activeJob.id))) {
+    completedJobIds.add(Number(activeJob.id));
+    setStatus(activeJob.status === "complete" ? "Auto Coach complete. Review markers and advice are refreshed." : `Auto Coach ${activeJob.status}: ${activeJob.message || ""}`);
+    if (currentMatchId) {
+      await Promise.all([loadMatches(), loadReport(currentMatchId), loadTrends(), loadCoach()]);
+    }
+  }
+  if (!running && jobPollTimer) {
+    window.clearInterval(jobPollTimer);
+    jobPollTimer = null;
+  }
 }
 
 async function loadPlaybook(id) {
@@ -991,6 +1035,7 @@ async function loadMatches() {
       <div class="match-actions">
         <div class="match-primary-actions">
           <button data-action="view" data-id="${match.id}">Review</button>
+          <button data-action="auto-coach" data-id="${match.id}">Auto Coach</button>
           <button class="secondary" data-action="analyze" data-id="${match.id}">Analyze</button>
           <button class="secondary" data-action="suggest" data-id="${match.id}">Find Deaths</button>
           <button class="ghost" data-action="guided-coach" data-id="${match.id}">Coach Me</button>
@@ -1190,8 +1235,10 @@ function renderReport(report) {
   const suggestions = renderSuggestions(report.suggestions || []);
   const timeline = renderVideoTimeline(report.deaths || [], report.suggestions || []);
   const matchAnalyses = renderMatchAnalyses(report.match_analyses || {});
+  const jobPanel = renderJobProgress(report.match.id);
 
   els.reportView.innerHTML = `
+    <div id="jobProgressMount">${jobPanel}</div>
     <div class="summary-grid">
       <div class="metric"><span>Map</span><strong>${escapeHtml(match.map || "Unknown")}</strong></div>
       <div class="metric"><span>Agent</span><strong>${escapeHtml(match.agent || "Unknown")}</strong></div>
@@ -1256,6 +1303,49 @@ function renderReport(report) {
     </details>
   `;
   attachVideoTimelineSync();
+}
+
+function renderJobProgress(matchId) {
+  const job = findVisibleCoachJob(matchId);
+  if (!job) return "";
+  const progress = Math.max(0, Math.min(100, Number(job.progress || 0)));
+  const result = job.result || {};
+  const summary = (result.summary || {}).summary || result.message || "";
+  const details = (result.summary || {}).next_action || "";
+  const statusClass = ["complete", "failed", "cancelled"].includes(job.status) ? job.status : "running";
+  return `
+    <section class="job-progress ${statusClass}">
+      <div class="job-progress-head">
+        <div>
+          <h3>Auto Coach Progress</h3>
+          <p>${escapeHtml(job.name)} · ${escapeHtml(job.status)}</p>
+        </div>
+        <strong>${progress}%</strong>
+      </div>
+      <div class="progress-track" aria-label="Auto Coach progress">
+        <span class="progress-fill" style="width:${progress}%"></span>
+      </div>
+      <p class="job-message">${escapeHtml(job.message || "Queued.")}</p>
+      ${summary ? `<p class="muted">${escapeHtml(summary)}</p>` : ""}
+      ${details ? `<p class="muted">${escapeHtml(details)}</p>` : ""}
+      ${["queued", "running"].includes(job.status) ? `<button class="danger" data-action="cancel-job" data-id="${job.id}">Cancel</button>` : ""}
+    </section>
+  `;
+}
+
+function renderJobProgressPanel() {
+  const mount = document.querySelector("#jobProgressMount");
+  if (!mount || !currentMatchId) return;
+  mount.innerHTML = renderJobProgress(currentMatchId);
+}
+
+function findVisibleCoachJob(matchId) {
+  const targetName = `Auto coach match #${matchId}`;
+  if (activeCoachJobId) {
+    const active = latestJobs.find((job) => Number(job.id) === Number(activeCoachJobId));
+    if (active) return active;
+  }
+  return latestJobs.find((job) => String(job.name || "").toLowerCase() === targetName.toLowerCase()) || null;
 }
 
 function renderMatchAnalyses(analyses) {
@@ -1984,6 +2074,7 @@ els.matchesList.addEventListener("click", (event) => {
   const action = button.dataset.action;
   if (action === "view") loadReport(id).catch((err) => setStatus(err.message));
   if (action === "save-match-metadata") saveMatchMetadata(button).catch((err) => setStatus(err.message));
+  if (action === "auto-coach") startAutoCoach(id).catch((err) => setStatus(err.message));
   if (action === "guided-coach") runGuidedCoach(id).catch((err) => setStatus(err.message));
   if (action === "pipeline") startPipeline(id).catch((err) => setStatus(err.message));
   if (action === "batch-deaths") startDeathBatch(id).catch((err) => setStatus(err.message));
@@ -2007,6 +2098,7 @@ els.reportView.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
   const action = button.dataset.action;
+  if (action === "cancel-job") cancelJob(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "jump") jumpTo(button.dataset.ts);
   if (action === "guided-coach") runGuidedCoach(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "preset-label") applyPreset(button);
@@ -2045,4 +2137,7 @@ window.addEventListener("pointerup", stopCalibrationDrag);
 
 loadSettings()
   .then(() => Promise.all([loadMatches(), loadTrends(), loadCoach(), loadCapabilities(), loadCalibration(), loadAutomation()]))
+  .then(() => {
+    if (latestJobs.some((job) => ["queued", "running"].includes(job.status))) ensureJobPolling();
+  })
   .catch((err) => setStatus(err.message));

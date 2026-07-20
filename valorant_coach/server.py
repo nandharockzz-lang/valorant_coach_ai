@@ -45,6 +45,7 @@ from .automation import (
     provider_registry,
     redacted_debug_bundle,
     restore_database,
+    run_auto_coach_pipeline,
     run_death_batch,
     run_local_ai_review,
     run_match_pipeline,
@@ -317,6 +318,13 @@ class CoachHandler(BaseHTTPRequestHandler):
                 job_id = JOBS.start(
                     f"Analyze match #{match_id}",
                     lambda update, mid=match_id: run_match_pipeline(DB, mid, PATHS, update),
+                )
+                self.json_response({"ok": True, "job_id": job_id})
+            elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/auto-coach"):
+                match_id = int(parsed.path.split("/")[3])
+                job_id = JOBS.start(
+                    f"Auto coach match #{match_id}",
+                    lambda update, mid=match_id: run_auto_coach_pipeline(DB, mid, PATHS, update),
                 )
                 self.json_response({"ok": True, "job_id": job_id})
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/batch-deaths"):

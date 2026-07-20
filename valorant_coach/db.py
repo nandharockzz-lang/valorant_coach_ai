@@ -792,14 +792,22 @@ class Database:
         return item
 
     def get_death_suggestions(self, match_id: int) -> List[Dict[str, Any]]:
+        return self.list_death_suggestions(match_id, "pending")
+
+    def list_death_suggestions(self, match_id: int, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        where = "WHERE match_id = ?"
+        params: List[Any] = [match_id]
+        if status:
+            where += " AND status = ?"
+            params.append(status)
         with self.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM death_suggestions
-                WHERE match_id = ? AND status = 'pending'
+                {where}
                 ORDER BY timestamp, id
                 """,
-                (match_id,),
+                params,
             ).fetchall()
         return [dict(row) for row in rows]
 

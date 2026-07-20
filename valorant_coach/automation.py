@@ -15,7 +15,7 @@ from urllib.error import URLError
 from .advice import generate_advice
 from .analyzer import analyze_match, import_video, scan_recording_folder
 from .clipper import extract_death_clips
-from .coach import build_coach_dashboard
+from .coach import build_coach_dashboard, build_guided_match_coach
 from .db import Database
 from .deep_analysis import analyze_hud, analyze_minimap, analyze_ocr
 from .reports import build_report, write_markdown_report
@@ -290,6 +290,184 @@ def run_match_pipeline(
     return result
 
 
+def run_auto_coach_pipeline(
+    db: Database,
+    match_id: int,
+    dirs: Dict[str, Path],
+    update: Callable[[str, int], None],
+) -> Dict[str, Any]:
+    match = db.get_match(match_id)
+    if not match:
+        raise ValueError(f"Unknown match id: {match_id}")
+
+    result: Dict[str, Any] = {"match_id": match_id, "steps": [], "promoted_deaths": 0, "pending_suggestions": 0}
+    update("Auto Coach: reading match metadata.", 3)
+    existing_deaths = db.get_deaths(match_id)
+    if existing_deaths:
+        result["steps"].append(
+            {
+                "metadata": {
+                    "ok": True,
+                    "message": f"Kept {len(existing_deaths)} existing death marker(s); metadata seeding was skipped to avoid overwriting review work.",
+                }
+            }
+        )
+    else:
+        result["steps"].append({"metadata": analyze_match(db, match_id)})
+
+    steps = [
+        ("events_v2", "detecting combat and death UI moments", 12, lambda: analyze_match_events(db, match_id, dirs["vision"])),
+        ("rounds", "reconstructing round timeline", 20, lambda: reconstruct_rounds(db, match_id, dirs["vision"])),
+        ("hud", "extracting HUD regions", 29, lambda: analyze_hud(db, match_id, dirs["deep"])),
+        ("minimap", "reading minimap activity", 38, lambda: analyze_minimap(db, match_id, dirs["deep"])),
+        ("crosshair", "scoring crosshair placement", 47, lambda: score_crosshair_match(db, match_id, dirs["vision"])),
+        ("ocr", "running local OCR on calibrated HUD regions", 55, lambda: analyze_ocr(db, match_id, dirs["deep"])),
+        ("suggest_deaths", "finding likely deaths from video signals", 64, lambda: suggest_deaths(db, match_id, dirs["vision"])),
+    ]
+    for name, message, progress, fn in steps:
+        update(f"Auto Coach: {message}.", progress)
+        result["steps"].append({name: safe_pipeline_call(fn)})
+
+    update("Auto Coach: promoting high-confidence death candidates.", 70)
+    promotion = promote_confident_death_suggestions(db, match_id)
+    result["promotion"] = promotion
+    result["promoted_deaths"] = promotion["promoted"]
+    result["pending_suggestions"] = promotion["pending"]
+
+    update("Auto Coach: extracting death clips.", 76)
+    result["steps"].append({"clips": safe_pipeline_call(lambda: extract_clips_for_match(db, match_id, dirs["clips"]))})
+
+    update("Auto Coach: selecting keyframes and understanding clips.", 83)
+    result["steps"].append({"death_batch": safe_pipeline_call(lambda: run_death_batch(db, match_id, dirs))})
+
+    update("Auto Coach: generating personal advice for marked deaths.", 90)
+    result["advice"] = generate_missing_death_advice(db, match_id)
+
+    update("Auto Coach: building review order and match plan.", 95)
+    result["guided_coach"] = safe_pipeline_call(lambda: build_guided_match_coach(db, match_id))
+    result["review_queue"] = safe_pipeline_call(lambda: build_review_queue(db, match_id))
+    result["review_queue_v2"] = safe_pipeline_call(lambda: smart_review_queue_v2(db, match_id))
+    result["round_story"] = safe_pipeline_call(lambda: reconstruct_round_story(db, match_id))
+
+    update("Auto Coach: writing report and saving summary.", 98)
+    report_path = write_markdown_report(db, dirs["reports"], match_id)
+    summary = build_auto_coach_summary(db, match_id, result, report_path)
+    db.save_structured_analysis(match_id, "auto_coach_summary", summary)
+    result["summary"] = summary
+    return result
+
+
+def safe_pipeline_call(fn: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
+    try:
+        return fn()
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)}
+
+
+def promote_confident_death_suggestions(
+    db: Database,
+    match_id: int,
+    threshold: float = 0.90,
+    duplicate_window_seconds: float = 7.0,
+) -> Dict[str, Any]:
+    deaths = db.get_deaths(match_id)
+    rounds = db.get_rounds(match_id)
+    suggestions = db.list_death_suggestions(match_id, "pending")
+    promoted: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+
+    known_timestamps = [
+        float(death["timestamp"])
+        for death in deaths
+        if death.get("timestamp") is not None
+    ]
+    for suggestion in suggestions:
+        ts = float(suggestion.get("timestamp") or 0)
+        confidence = float(suggestion.get("confidence") or 0)
+        duplicate = any(abs(ts - existing) <= duplicate_window_seconds for existing in known_timestamps)
+        if confidence < threshold or duplicate:
+            skipped.append(
+                {
+                    "suggestion_id": suggestion["id"],
+                    "timestamp": ts,
+                    "confidence": confidence,
+                    "reason": "duplicate" if duplicate else "below auto-promotion threshold",
+                }
+            )
+            continue
+
+        death_id = db.create_death(
+            match_id=match_id,
+            round_number=round_for_timestamp(rounds, ts),
+            timestamp=ts,
+            labels=["needs manual review"],
+            notes=f"Auto-promoted by detector: {suggestion.get('reason') or 'high-confidence death candidate'}",
+            confidence=confidence,
+        )
+        db.update_death_suggestion_status(int(suggestion["id"]), "accepted")
+        db.save_detector_feedback(suggestion, "accepted", {"source": "auto_coach", "auto_promoted": True})
+        known_timestamps.append(ts)
+        promoted.append({"suggestion_id": suggestion["id"], "death_id": death_id, "timestamp": ts, "confidence": confidence})
+
+    pending = len(db.list_death_suggestions(match_id, "pending"))
+    return {
+        "ok": True,
+        "promoted": len(promoted),
+        "pending": pending,
+        "threshold": threshold,
+        "promoted_items": promoted,
+        "skipped": skipped,
+        "message": f"Promoted {len(promoted)} high-confidence death(s); {pending} candidate(s) still need review.",
+    }
+
+
+def round_for_timestamp(rounds: List[Dict[str, Any]], timestamp: float) -> Optional[int]:
+    for item in rounds:
+        start = item.get("start_ts")
+        end = item.get("end_ts")
+        if start is None:
+            continue
+        if float(start) <= timestamp and (end is None or timestamp <= float(end)):
+            return int(item.get("round_number") or 0) or None
+    return None
+
+
+def generate_missing_death_advice(db: Database, match_id: int, limit: int = 12) -> Dict[str, Any]:
+    generated = []
+    skipped = 0
+    for death in db.get_deaths(match_id)[:limit]:
+        if death.get("advice"):
+            skipped += 1
+            continue
+        try:
+            generated.append(generate_advice(db, int(death["id"])))
+        except Exception as exc:
+            generated.append({"death_id": death["id"], "ok": False, "message": str(exc)})
+    return {"ok": True, "generated": len(generated), "skipped": skipped, "items": generated}
+
+
+def build_auto_coach_summary(db: Database, match_id: int, result: Dict[str, Any], report_path: Path) -> Dict[str, Any]:
+    deaths = db.get_deaths(match_id)
+    suggestions = db.get_death_suggestions(match_id)
+    guided = db.get_latest_structured_analysis("match", match_id, "guided_coach")
+    review_order = ((guided or {}).get("payload") or {}).get("review_order") or []
+    return {
+        "kind": "auto_coach_summary",
+        "match_id": match_id,
+        "summary": (
+            f"Auto Coach marked {len(deaths)} death(s), promoted {result.get('promoted_deaths', 0)} candidate(s), "
+            f"and left {len(suggestions)} uncertain candidate(s) for review."
+        ),
+        "deaths": len(deaths),
+        "pending_suggestions": len(suggestions),
+        "advice_generated": (result.get("advice") or {}).get("generated", 0),
+        "review_items": len(review_order),
+        "report_path": str(report_path),
+        "next_action": "Open Review, use the timeline markers, and verify pending suggestions so the detector learns your footage.",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
 def extract_clips_for_match(db: Database, match_id: int, clips_dir: Path) -> Dict[str, Any]:
     match = db.get_match(match_id)
     if not match:
@@ -505,7 +683,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.8.0-local"
+APP_VERSION = "0.9.0-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -514,6 +692,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "build": "local-dev",
         "schema": db.schema_info(),
         "changelog": [
+            "Auto Coach pipeline with high-confidence death promotion, advice generation, and visible job progress.",
             "Persistent jobs, logs, backups, retention, exports, and automation.",
             "Advanced search, playbook editing, correction review, privacy audit, provider registry.",
         ],

@@ -858,6 +858,66 @@ video {
   background: #f8fffd;
 }
 
+.job-progress {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #bdd6d2;
+  border-left: 5px solid var(--teal);
+  border-radius: 8px;
+  background: #f8fffd;
+}
+
+.job-progress.failed,
+.job-progress.cancelled {
+  border-left-color: var(--red);
+  background: #fff7f7;
+}
+
+.job-progress.complete {
+  border-left-color: #2f7d45;
+  background: #f7fff9;
+}
+
+.job-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.job-progress-head p,
+.job-message {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.job-progress-head strong {
+  min-width: 48px;
+  text-align: right;
+  color: var(--teal);
+  font-size: 20px;
+}
+
+.progress-track {
+  position: relative;
+  height: 12px;
+  overflow: hidden;
+  border: 1px solid #b8d8d3;
+  border-radius: 999px;
+  background: #e8f0ef;
+}
+
+.progress-fill {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--teal), var(--red));
+  transition: width 220ms ease;
+}
+
 .guided-coach {
   display: grid;
   gap: 10px;
