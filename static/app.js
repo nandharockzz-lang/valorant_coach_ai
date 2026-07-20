@@ -22,6 +22,7 @@ let latestJobs = [];
 let activeCoachJobId = null;
 let jobPollTimer = null;
 const completedJobIds = new Set();
+let latestCoachDashboard = null;
 let currentCalibration = {};
 const CALIBRATION_REGIONS = [
   ["hud_top", "Top HUD"],
@@ -76,6 +77,15 @@ function normalizeProgress(value) {
     return null;
   }
   return Math.max(0, Math.min(100, number));
+}
+
+function activateDashboardTab(targetId) {
+  document.querySelectorAll(".side-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.tabTarget === targetId);
+  });
+  document.querySelectorAll(".tab-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.id === targetId);
+  });
 }
 
 async function api(path, options = {}) {
@@ -1266,6 +1276,7 @@ async function loadCoach() {
 }
 
 function renderCoach(coach) {
+  latestCoachDashboard = coach;
   const profile = coach.profile || {};
   const plan = coach.plan || {};
   const goal = coach.active_goal;
@@ -1407,6 +1418,7 @@ function renderReport(report) {
   const matchAnalyses = renderMatchAnalyses(report.match_analyses || {});
   const jobPanel = renderJobProgress(report.match.id);
   const priorities = renderCoachPriorities(report, coachMoments);
+  const memoryStrip = renderCoachMemoryStrip(latestCoachDashboard);
   const manualMarkerForm = renderManualMarkerForm(match.id);
 
   els.reportView.innerHTML = `
@@ -1422,6 +1434,7 @@ function renderReport(report) {
       </div>
       ${timeline}
     </section>
+    ${memoryStrip}
     ${priorities}
     ${guidedCoach}
     ${suggestions}
@@ -1459,6 +1472,29 @@ function renderReport(report) {
     </details>
   `;
   attachVideoTimelineSync();
+}
+
+function renderCoachMemoryStrip(coach) {
+  if (!coach) {
+    return "";
+  }
+  const plan = coach.plan || {};
+  const coachV2 = coach.coach_v2 || {};
+  const weekly = coachV2.weekly_focus || {};
+  const memory = coach.memory || {};
+  const focus = weekly.primary_focus || plan.focus_label || "review discipline";
+  const target = weekly.target || plan.in_game_rule || memory.summary || "Build memory by reviewing deaths with Clip Coach.";
+  const weighted = (coachV2.weighted_profile || []).slice(0, 3).map((item) => `<span class="tag">${escapeHtml(item.label)}</span>`).join("");
+  return `
+    <section class="coach-memory-strip">
+      <div>
+        <span class="muted">Coach Memory</span>
+        <strong>${escapeHtml(focus)}</strong>
+        <p>${escapeHtml(target)}</p>
+      </div>
+      <div class="memory-tags">${weighted || '<span class="tag">learning</span>'}</div>
+    </section>
+  `;
 }
 
 function renderManualMarkerForm(matchId) {
@@ -1940,7 +1976,7 @@ function renderDeathCard(death) {
       <details class="advanced-actions">
         <summary>Clip, AI, and edit tools</summary>
         <div class="row">
-          <button class="secondary" data-action="local-ai-review" data-id="${death.id}">Local AI</button>
+          <button class="secondary" data-action="local-ai-review" data-id="${death.id}">Clip Coach</button>
           <button class="secondary" data-action="vision" data-id="${death.id}">Analyze Clip</button>
           <button class="secondary" data-action="keyframes" data-id="${death.id}">Keyframes</button>
           <button class="secondary" data-action="understand" data-id="${death.id}">Understand</button>
@@ -2386,6 +2422,9 @@ els.saveCalibrationBtn.addEventListener("click", () => saveCalibration().catch((
 els.scanBtn.addEventListener("click", () => scanFolder().catch((err) => setStatus(err.message)));
 els.importBtn.addEventListener("click", () => importVideo().catch((err) => setStatus(err.message)));
 els.refreshBtn.addEventListener("click", () => Promise.all([loadVersionBadge(), loadMatches(), loadTrends(), loadCapabilities(), loadAutomation()]).catch((err) => setStatus(err.message)));
+document.querySelectorAll(".side-tab").forEach((button) => {
+  button.addEventListener("click", () => activateDashboardTab(button.dataset.tabTarget));
+});
 els.coachView.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;

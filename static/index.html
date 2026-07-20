@@ -19,59 +19,65 @@
     </header>
 
     <main class="layout">
-      <section class="panel controls">
-        <h2>Recordings</h2>
-        <label>
-          Recording folder
-          <input id="recordingDir" type="text" placeholder="C:\Users\hjr\Videos\Valorant" />
-        </label>
-        <div class="row">
-          <button id="saveSettingsBtn">Save</button>
-          <button id="scanBtn">Scan Folder</button>
-        </div>
-        <label>
-          Import one video
-          <input id="videoPath" type="text" placeholder="Full path to .mp4 or .mkv" />
-        </label>
-        <button id="importBtn">Import Video</button>
-      </section>
+      <aside class="panel sidebar-dashboard">
+        <nav class="side-tabs" aria-label="Dashboard sections">
+          <button class="side-tab active" type="button" data-tab-target="tab-recordings">Recordings</button>
+          <button class="side-tab" type="button" data-tab-target="tab-matches">Matches</button>
+          <button class="side-tab" type="button" data-tab-target="tab-memory">Memory</button>
+          <button class="side-tab" type="button" data-tab-target="tab-tools">Tools</button>
+        </nav>
 
-      <section class="panel matches">
-        <h2>Matches</h2>
-        <div id="matchesList" class="matches-list"></div>
-      </section>
+        <section id="tab-recordings" class="tab-panel active">
+          <h2>Recordings</h2>
+          <label>
+            Recording folder
+            <input id="recordingDir" type="text" placeholder="C:\Users\hjr\Videos\Valorant" />
+          </label>
+          <div class="row">
+            <button id="saveSettingsBtn">Save</button>
+            <button id="scanBtn">Scan Folder</button>
+          </div>
+          <label>
+            Import one video
+            <input id="videoPath" type="text" placeholder="Full path to .mp4 or .mkv" />
+          </label>
+          <button id="importBtn">Import Video</button>
+        </section>
+
+        <section id="tab-matches" class="tab-panel">
+          <h2>Matches</h2>
+          <div id="matchesList" class="matches-list"></div>
+        </section>
+
+        <section id="tab-memory" class="tab-panel">
+          <h2>Coach Memory</h2>
+          <div id="coachView" class="coach-view"></div>
+          <div class="memory-trends">
+            <h2>Trends</h2>
+            <div id="trendsView" class="trends-view"></div>
+          </div>
+        </section>
+
+        <section id="tab-tools" class="tab-panel">
+          <h2>Tools</h2>
+          <details>
+            <summary>Calibration</summary>
+            <div id="capabilitiesView" class="capabilities-view"></div>
+            <div id="calibrationView" class="calibration-view"></div>
+            <button id="saveCalibrationBtn" class="secondary">Save Calibration</button>
+          </details>
+          <details>
+            <summary>Automation And Local AI</summary>
+            <div id="automationView" class="automation-view"></div>
+          </details>
+        </section>
+      </aside>
 
       <section class="panel report">
         <h2>Review</h2>
         <div id="reportView" class="report-view">
           <p class="muted">Select a match and click Review.</p>
         </div>
-      </section>
-
-      <section class="panel coach">
-        <h2>Coach</h2>
-        <div id="coachView" class="coach-view"></div>
-      </section>
-
-      <section class="panel trends">
-        <h2>Trends</h2>
-        <div id="trendsView" class="trends-view"></div>
-      </section>
-
-      <section class="panel calibration">
-        <details>
-          <summary>Advanced: Calibration</summary>
-          <div id="capabilitiesView" class="capabilities-view"></div>
-          <div id="calibrationView" class="calibration-view"></div>
-          <button id="saveCalibrationBtn" class="secondary">Save Calibration</button>
-        </details>
-      </section>
-
-      <section class="panel automation">
-        <details>
-          <summary>Advanced: Automation And Tools</summary>
-          <div id="automationView" class="automation-view"></div>
-        </details>
       </section>
     </main>
 

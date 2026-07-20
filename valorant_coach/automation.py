@@ -939,7 +939,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.11.4-local"
+APP_VERSION = "0.12.0-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -950,6 +950,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Redesign the UI with a dark theme, tabbed left dashboard, and compact Coach Memory strip in Review.",
             "Add runtime Local AI FPS override controls with quick FPS presets.",
             "Add batched Local AI clip review and Burst mode for more frames without one oversized model request.",
             "Upgrade the bottom status bar into a compact action pill with busy spinner and job progress percent.",
