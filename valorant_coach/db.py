@@ -726,6 +726,20 @@ class Database:
         confidence: float,
     ) -> int:
         with self.connect() as conn:
+            if timestamp is not None:
+                existing = conn.execute(
+                    """
+                    SELECT id FROM deaths
+                    WHERE match_id = ?
+                      AND timestamp IS NOT NULL
+                      AND ABS(timestamp - ?) <= 3.0
+                    ORDER BY ABS(timestamp - ?), id
+                    LIMIT 1
+                    """,
+                    (match_id, float(timestamp), float(timestamp)),
+                ).fetchone()
+                if existing:
+                    return int(existing["id"])
             cursor = conn.execute(
                 """
                 INSERT INTO deaths(match_id, round_number, timestamp, clip_path, mistake_labels, confidence, notes)
@@ -742,8 +756,55 @@ class Database:
         reason: str,
         confidence: float,
         frame_path: Optional[str],
-    ) -> int:
+    ) -> Optional[int]:
         with self.connect() as conn:
+            existing_death = conn.execute(
+                """
+                SELECT id FROM deaths
+                WHERE match_id = ?
+                  AND timestamp IS NOT NULL
+                  AND ABS(timestamp - ?) <= 5.0
+                ORDER BY ABS(timestamp - ?), id
+                LIMIT 1
+                """,
+                (match_id, float(timestamp), float(timestamp)),
+            ).fetchone()
+            if existing_death:
+                return None
+
+            existing_suggestion = conn.execute(
+                """
+                SELECT * FROM death_suggestions
+                WHERE match_id = ?
+                  AND ABS(timestamp - ?) <= 5.0
+                ORDER BY
+                  CASE status
+                    WHEN 'pending' THEN 0
+                    WHEN 'accepted' THEN 1
+                    WHEN 'rejected' THEN 2
+                    ELSE 3
+                  END,
+                  ABS(timestamp - ?),
+                  id
+                LIMIT 1
+                """,
+                (match_id, float(timestamp), float(timestamp)),
+            ).fetchone()
+            if existing_suggestion:
+                if existing_suggestion["status"] == "pending":
+                    existing_id = int(existing_suggestion["id"])
+                    if float(confidence) > float(existing_suggestion["confidence"] or 0):
+                        conn.execute(
+                            """
+                            UPDATE death_suggestions
+                            SET timestamp = ?, reason = ?, confidence = ?, frame_path = ?
+                            WHERE id = ?
+                            """,
+                            (timestamp, reason, confidence, frame_path, existing_id),
+                        )
+                    return existing_id
+                return None
+
             cursor = conn.execute(
                 """
                 INSERT INTO death_suggestions(match_id, timestamp, reason, confidence, frame_path)
@@ -810,6 +871,45 @@ class Database:
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def cleanup_pending_death_suggestions(self, match_id: int, window_seconds: float = 5.0) -> int:
+        with self.connect() as conn:
+            pending = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT * FROM death_suggestions
+                    WHERE match_id = ? AND status = 'pending'
+                    ORDER BY confidence DESC, timestamp, id
+                    """,
+                    (match_id,),
+                ).fetchall()
+            ]
+            blockers = [
+                float(row["timestamp"])
+                for row in conn.execute(
+                    """
+                    SELECT timestamp FROM deaths
+                    WHERE match_id = ? AND timestamp IS NOT NULL
+                    UNION ALL
+                    SELECT timestamp FROM death_suggestions
+                    WHERE match_id = ? AND status IN ('accepted', 'rejected')
+                    """,
+                    (match_id, match_id),
+                ).fetchall()
+            ]
+            kept: List[float] = []
+            delete_ids: List[int] = []
+            for item in pending:
+                ts = float(item.get("timestamp") or 0)
+                duplicate = any(abs(ts - other) <= window_seconds for other in blockers + kept)
+                if duplicate:
+                    delete_ids.append(int(item["id"]))
+                else:
+                    kept.append(ts)
+            if delete_ids:
+                conn.executemany("DELETE FROM death_suggestions WHERE id = ?", [(item_id,) for item_id in delete_ids])
+            return len(delete_ids)
 
     def update_death_suggestion_status(self, suggestion_id: int, status: str) -> None:
         if status not in {"pending", "accepted", "rejected"}:

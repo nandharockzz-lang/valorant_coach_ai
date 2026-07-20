@@ -70,11 +70,14 @@ def suggest_deaths(db: Database, match_id: int, work_dir: Path) -> Dict[str, Any
         }
 
     frame_dir = work_dir / FRAME_DIR_NAME / f"match-{match_id}"
+    cleaned = db.cleanup_pending_death_suggestions(match_id)
     frames = extract_scan_frames(ffmpeg, video_path, frame_dir, fps=scan_fps(db))
     feedback = db.detector_feedback_summary()
     feedback["sensitivity"] = db.get_setting("detector_sensitivity", "normal")
     suggestions = analyze_frames(frames, db.get_calibration(), feedback)
     saved = []
+    skipped = 0
+    seen_ids = set()
     for item in suggestions:
         suggestion_id = db.create_death_suggestion(
             match_id=match_id,
@@ -83,9 +86,18 @@ def suggest_deaths(db: Database, match_id: int, work_dir: Path) -> Dict[str, Any
             confidence=item["confidence"],
             frame_path=item.get("frame_path"),
         )
+        if suggestion_id is None or suggestion_id in seen_ids:
+            skipped += 1
+            continue
+        seen_ids.add(suggestion_id)
         item["id"] = suggestion_id
         saved.append(item)
-    return {"ok": True, "message": f"Found {len(saved)} suggested death marker(s).", "suggestions": saved}
+    cleaned += db.cleanup_pending_death_suggestions(match_id)
+    saved = [item for item in saved if db.get_death_suggestion(int(item["id"]))]
+    message = f"Found {len(saved)} new suggested death marker(s)."
+    if skipped or cleaned:
+        message += f" Skipped/cleaned {skipped + cleaned} duplicate or already-reviewed candidate(s)."
+    return {"ok": True, "message": message, "suggestions": saved, "skipped_duplicates": skipped + cleaned}
 
 
 def extract_scan_frames(ffmpeg: str, video_path: Path, frame_dir: Path, fps: str = "1") -> List[Path]:

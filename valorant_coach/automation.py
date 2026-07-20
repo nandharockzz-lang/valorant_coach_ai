@@ -329,7 +329,7 @@ def run_auto_coach_pipeline(
         update(f"Auto Coach: {message}.", progress)
         result["steps"].append({name: safe_pipeline_call(fn)})
 
-    update("Auto Coach: promoting high-confidence death candidates.", 70)
+    update("Auto Coach: preserving confirmed markers and preparing suggestions for review.", 70)
     promotion = promote_confident_death_suggestions(db, match_id)
     result["promotion"] = promotion
     result["promoted_deaths"] = promotion["promoted"]
@@ -638,53 +638,28 @@ def promote_confident_death_suggestions(
     duplicate_window_seconds: float = 7.0,
 ) -> Dict[str, Any]:
     deaths = db.get_deaths(match_id)
-    rounds = db.get_rounds(match_id)
     suggestions = db.list_death_suggestions(match_id, "pending")
-    promoted: List[Dict[str, Any]] = []
-    skipped: List[Dict[str, Any]] = []
 
-    known_timestamps = [
-        float(death["timestamp"])
-        for death in deaths
-        if death.get("timestamp") is not None
+    skipped = [
+        {
+            "suggestion_id": suggestion["id"],
+            "timestamp": float(suggestion.get("timestamp") or 0),
+            "confidence": float(suggestion.get("confidence") or 0),
+            "reason": "left for user review",
+        }
+        for suggestion in suggestions
     ]
-    for suggestion in suggestions:
-        ts = float(suggestion.get("timestamp") or 0)
-        confidence = float(suggestion.get("confidence") or 0)
-        duplicate = any(abs(ts - existing) <= duplicate_window_seconds for existing in known_timestamps)
-        if confidence < threshold or duplicate:
-            skipped.append(
-                {
-                    "suggestion_id": suggestion["id"],
-                    "timestamp": ts,
-                    "confidence": confidence,
-                    "reason": "duplicate" if duplicate else "below auto-promotion threshold",
-                }
-            )
-            continue
-
-        death_id = db.create_death(
-            match_id=match_id,
-            round_number=round_for_timestamp(rounds, ts),
-            timestamp=ts,
-            labels=["needs manual review"],
-            notes=f"Auto-promoted by detector: {suggestion.get('reason') or 'high-confidence death candidate'}",
-            confidence=confidence,
-        )
-        db.update_death_suggestion_status(int(suggestion["id"]), "accepted")
-        db.save_detector_feedback(suggestion, "accepted", {"source": "auto_coach", "auto_promoted": True})
-        known_timestamps.append(ts)
-        promoted.append({"suggestion_id": suggestion["id"], "death_id": death_id, "timestamp": ts, "confidence": confidence})
-
-    pending = len(db.list_death_suggestions(match_id, "pending"))
     return {
         "ok": True,
-        "promoted": len(promoted),
-        "pending": pending,
+        "promoted": 0,
+        "pending": len(suggestions),
         "threshold": threshold,
-        "promoted_items": promoted,
+        "promoted_items": [],
         "skipped": skipped,
-        "message": f"Promoted {len(promoted)} high-confidence death(s); {pending} candidate(s) still need review.",
+        "message": (
+            f"Kept {len(deaths)} confirmed death marker(s) unchanged; "
+            f"{len(suggestions)} candidate(s) remain pending for manual review."
+        ),
     }
 
 
@@ -950,7 +925,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.10.1-local"
+APP_VERSION = "0.10.2-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -961,9 +936,11 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Confirmed death markers are preserved when Auto Coach, Analyze, or Find Deaths runs.",
+            "Duplicate death suggestions near accepted, rejected, or already marked deaths are skipped.",
             "Coach moment feedback and LM Studio connection testing for better local model setup and personalization.",
             "Full VOD Coach scans whole matches for crosshair, pressure, minimap, and reset moments with optional local vision-model review.",
-            "Auto Coach pipeline with high-confidence death promotion, advice generation, and visible job progress.",
+            "Auto Coach pipeline with advice generation, review-safe suggestions, and visible job progress.",
             "Persistent jobs, logs, backups, retention, exports, and automation.",
             "Advanced search, playbook editing, correction review, privacy audit, provider registry.",
         ],

@@ -119,8 +119,13 @@ def analyze_match(db: Database, match_id: int) -> Dict[str, Any]:
             }
         ]
 
+    existing_deaths = db.get_deaths(match_id)
     db.replace_rounds(match_id, rounds)
-    db.replace_deaths(match_id, deaths)
+    if existing_deaths:
+        deaths_written = 0
+    else:
+        db.replace_deaths(match_id, deaths)
+        deaths_written = len(deaths)
     db.update_match(
         match_id,
         map=detected_map,
@@ -128,7 +133,13 @@ def analyze_match(db: Database, match_id: int) -> Dict[str, Any]:
         duration=None,
         status=status,
     )
-    return {"match_id": match_id, "status": status, "rounds": len(rounds), "deaths": len(deaths)}
+    return {
+        "match_id": match_id,
+        "status": status,
+        "rounds": len(rounds),
+        "deaths": deaths_written,
+        "kept_existing_deaths": len(existing_deaths),
+    }
 
 
 def normalize_rounds(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -163,4 +174,3 @@ def normalize_deaths(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             }
         )
     return normalized
-

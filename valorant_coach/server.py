@@ -498,11 +498,13 @@ class CoachHandler(BaseHTTPRequestHandler):
                     )
                     DB.update_death_suggestion_status(suggestion_id, "accepted")
                     DB.save_detector_feedback(suggestion, "accepted", {"source": "suggestion_action"})
-                    self.json_response({"ok": True, "death_id": death_id})
+                    cleaned = DB.cleanup_pending_death_suggestions(int(suggestion["match_id"]))
+                    self.json_response({"ok": True, "death_id": death_id, "cleaned_duplicates": cleaned})
                 elif action == "reject":
                     DB.update_death_suggestion_status(suggestion_id, "rejected")
                     DB.save_detector_feedback(suggestion, "rejected", {"source": "suggestion_action"})
-                    self.json_response({"ok": True})
+                    cleaned = DB.cleanup_pending_death_suggestions(int(suggestion["match_id"]))
+                    self.json_response({"ok": True, "cleaned_duplicates": cleaned})
                 else:
                     self.bad_request("action must be accept or reject")
             elif parsed.path.startswith("/api/deaths/"):
