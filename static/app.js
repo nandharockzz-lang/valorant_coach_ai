@@ -1036,12 +1036,14 @@ async function loadPlaybook(id) {
   await loadReport(id);
 }
 
-async function getAdvice(deathId) {
+async function getAdvice(deathId, options = {}) {
   setStatus(`Generating advice for death #${deathId}...`);
   const payload = await api(`/api/deaths/${deathId}/advice`, { method: "POST" });
   setStatus(`Advice generated: ${payload.advice.primary_mistake}`);
-  await loadReport(currentMatchId);
-  await loadCoach();
+  if (options.reload !== false) {
+    await loadReport(currentMatchId);
+    await loadCoach();
+  }
 }
 
 async function analyzeGameplay(deathId) {
@@ -1070,11 +1072,29 @@ async function aiReview(deathId) {
   setStatus(payload.message);
 }
 
-async function localAiReview(deathId) {
+async function localAiReview(deathId, options = {}) {
   setStatus(`Clip Coach is reviewing death #${deathId}. Sending frames to your local model...`, { state: "busy" });
   const payload = await api(`/api/deaths/${deathId}/local-ai-review`, { method: "POST" });
   setStatus(payload.message || `Clip Coach review ready for death #${deathId}.`);
-  if (currentMatchId) await loadReport(currentMatchId);
+  if (options.reload !== false && currentMatchId) await loadReport(currentMatchId);
+  return payload;
+}
+
+async function coachClip(deathId) {
+  setStatus(`Coach is reviewing death #${deathId} with local vision and saved patterns...`, { state: "busy" });
+  let localError = "";
+  try {
+    await localAiReview(deathId, { reload: false });
+  } catch (err) {
+    localError = err.message;
+  }
+  await getAdvice(deathId, { reload: false });
+  await Promise.all([currentMatchId ? loadReport(currentMatchId) : Promise.resolve(), loadCoach(), loadTrends()]);
+  if (localError) {
+    setStatus(`Normal coach advice saved. Clip Coach failed: ${localError}`, { state: "error" });
+  } else {
+    setStatus(`Coach review ready for death #${deathId}.`);
+  }
 }
 
 async function saveClipAnnotation(button) {
@@ -1248,26 +1268,57 @@ async function loadMatches() {
 
 async function loadTrends() {
   const trends = await api("/api/trends");
-  const labels = Object.entries(trends.labels)
-    .slice(0, 8)
-    .map(([label, count]) => `<li><span class="tag">${escapeHtml(label)}</span> ${count}</li>`)
-    .join("");
-  const maps = Object.entries(trends.by_map)
-    .slice(0, 5)
-    .map(([map, count]) => `<li>${escapeHtml(map)}: ${count}</li>`)
-    .join("");
-  const recent = trends.matches
-    .slice(0, 5)
-    .map((match) => `<li>#${match.match_id} ${escapeHtml(match.map)} / ${escapeHtml(match.agent)}: ${match.death_count} deaths</li>`)
+  const matches = trends.matches || [];
+  const matchCount = matches.length;
+  const deathCount = matches.reduce((sum, match) => sum + Number(match.death_count || 0), 0);
+  const topMistake = topCount(trends.labels || {});
+  const topMap = topCount(trends.by_map || {});
+  const avgDeaths = matchCount ? (deathCount / matchCount).toFixed(1) : "0";
+  const recent = matches
+    .slice(0, 6)
+    .map((match) => {
+      const top = topCount(match.labels || {});
+      return `<li>#${match.match_id} ${escapeHtml(match.map)} / ${escapeHtml(match.agent)}: ${match.death_count} deaths${top ? `, ${escapeHtml(top[0])}` : ""}</li>`;
+    })
     .join("");
 
   els.trendsView.innerHTML = `
-    <h3>Top Mistakes</h3>
-    <ul class="compact-list">${labels || "<li>No labeled trends yet.</li>"}</ul>
-    <h3>Death Load By Map</h3>
-    <ul class="compact-list">${maps || "<li>No map data yet.</li>"}</ul>
-    <h3>Recent Matches</h3>
-    <ul class="compact-list">${recent || "<li>No matches yet.</li>"}</ul>
+    <section class="player-status-report compact-status-report">
+      <div class="status-metric-grid">
+        <article class="status-metric">
+          <span>Matches Parsed</span>
+          <strong>${matchCount}</strong>
+          <p>${deathCount} marked death(s)</p>
+        </article>
+        <article class="status-metric">
+          <span>Avg Death Load</span>
+          <strong>${avgDeaths}</strong>
+          <p>marked deaths per match</p>
+        </article>
+        <article class="status-metric">
+          <span>Top Mistake</span>
+          <strong>${escapeHtml(titleCase(topMistake?.[0] || "none"))}</strong>
+          <p>${topMistake ? `${topMistake[1]} occurrence(s)` : "Save labels to build this."}</p>
+        </article>
+        <article class="status-metric">
+          <span>Worst Map</span>
+          <strong>${escapeHtml(topMap?.[0] || "none")}</strong>
+          <p>${topMap ? `${topMap[1]} death marker(s)` : "No map data yet."}</p>
+        </article>
+      </div>
+      <div class="player-graph-grid">
+        ${renderStatusPanel("Mistakes Across All Matches", trends.labels || {}, Math.max(1, deathCount), "No labeled mistakes yet.")}
+        ${renderStatusPanel("Deaths By Map", trends.by_map || {}, Math.max(1, deathCount), "No map data yet.")}
+        ${renderStatusPanel("Deaths By Agent", trends.by_agent || {}, Math.max(1, deathCount), "No agent data yet.")}
+        <article class="status-panel">
+          <div class="analysis-head">
+            <strong>Recent Match Reads</strong>
+            <span>${matches.slice(0, 6).length}</span>
+          </div>
+          <ul class="compact-list">${recent || "<li>No matches yet.</li>"}</ul>
+        </article>
+      </div>
+    </section>
   `;
 }
 
@@ -2140,27 +2191,36 @@ function renderDeathCard(death) {
           ${renderTags(death.mistake_labels || [])}
         </div>
         <button class="secondary" data-action="jump" data-ts="${death.timestamp || 0}">Jump</button>
-        <button data-action="advice" data-id="${death.id}">${death.advice ? "Refresh Advice" : "Get Advice"}</button>
+        <button data-action="coach-clip" data-id="${death.id}">${death.advice || death.local_ai_review ? "Refresh Coach" : "Coach This Clip"}</button>
       </div>
       ${death.notes ? `<p class="death-note">${escapeHtml(shortenText(death.notes, 180))}</p>` : ""}
       ${advice}
       <details class="advanced-actions">
-        <summary>Clip, AI, and edit tools</summary>
+        <summary>Edit marker and advanced tools</summary>
         <div class="row">
-          <button class="secondary" data-action="local-ai-review" data-id="${death.id}">Clip Coach</button>
-          <button class="secondary" data-action="vision" data-id="${death.id}">Analyze Clip</button>
-          <button class="secondary" data-action="keyframes" data-id="${death.id}">Keyframes</button>
-          <button class="secondary" data-action="understand" data-id="${death.id}">Understand</button>
-          <button class="secondary" data-action="gameplay" data-id="${death.id}">Gameplay</button>
-          <button class="secondary" data-action="ai-review" data-id="${death.id}">AI Review</button>
-          <button class="secondary" data-action="benchmark-true-positive" data-id="${death.id}" data-match="${death.match_id}" data-ts="${death.timestamp || 0}">True Positive</button>
+          <button class="secondary" data-action="advice" data-id="${death.id}">Normal Advice Only</button>
+          <button class="secondary" data-action="local-ai-review" data-id="${death.id}">Clip Coach Only</button>
           ${clip}
         </div>
+        <details class="advanced-actions">
+          <summary>Legacy diagnostics</summary>
+          <div class="row">
+            <button class="secondary" data-action="vision" data-id="${death.id}">Analyze Clip</button>
+            <button class="secondary" data-action="keyframes" data-id="${death.id}">Keyframes</button>
+            <button class="secondary" data-action="understand" data-id="${death.id}">Understand</button>
+            <button class="secondary" data-action="gameplay" data-id="${death.id}">Gameplay</button>
+            <button class="secondary" data-action="ai-review" data-id="${death.id}">AI Review</button>
+            <button class="secondary" data-action="benchmark-true-positive" data-id="${death.id}" data-match="${death.match_id}" data-ts="${death.timestamp || 0}">True Positive</button>
+          </div>
+        </details>
         ${vision}
         ${keyframes}
         ${understanding}
         ${localAi}
         ${annotations}
+        <div class="row">
+          <button class="secondary" data-action="loop-death" data-ts="${death.timestamp || 0}">Loop Clip</button>
+        </div>
         <div class="death-editor">
           <label>Round <input data-field="round_number" type="number" min="1" value="${death.round_number || ""}" /></label>
           <label>Time sec <input data-field="timestamp" type="number" min="0" step="0.1" value="${death.timestamp ?? ""}" /></label>
@@ -2333,7 +2393,7 @@ function renderPresetButtons() {
 
 function renderAdvice(advice) {
   if (!advice) {
-    return '<div class="advice-empty">No coach read yet. Click Get Advice after confirming this marker.</div>';
+    return '<div class="advice-empty">No coach read yet. Click Coach This Clip after confirming this marker.</div>';
   }
   const secondary = (advice.secondary_mistakes || []).length
     ? `<p class="muted">Also check: ${escapeHtml(advice.secondary_mistakes.join(", "))}</p>`
@@ -2721,6 +2781,7 @@ els.reportView.addEventListener("click", (event) => {
   if (action === "benchmark-true-positive") saveBenchmarkLabel({ match_id: button.dataset.match, death_id: button.dataset.id, timestamp: button.dataset.ts, label_type: "true_positive", note: "Marked from death card" }).catch((err) => setStatus(err.message));
   if (action === "benchmark-missed") saveBenchmarkLabel({ match_id: button.dataset.id, timestamp: document.querySelector("#benchmarkMissedTs").value, label_type: "missed_death", note: document.querySelector("#benchmarkNote").value }).catch((err) => setStatus(err.message));
   if (action === "add-death") addDeath(button.dataset.id).catch((err) => setStatus(err.message));
+  if (action === "coach-clip") coachClip(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "advice") getAdvice(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "vision") analyzeDeathVision(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "keyframes") extractKeyframes(button.dataset.id).catch((err) => setStatus(err.message));

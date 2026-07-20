@@ -1490,7 +1490,7 @@ body {
 
 .side-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
   padding: 4px;
   border: 1px solid var(--line);
@@ -1532,6 +1532,25 @@ body {
 
 .memory-trends {
   margin-top: 18px;
+}
+
+.compact-status-report {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.sidebar-dashboard .status-metric-grid,
+.sidebar-dashboard .player-graph-grid {
+  grid-template-columns: 1fr;
+}
+
+.sidebar-dashboard .status-metric strong {
+  font-size: 18px;
+}
+
+.sidebar-dashboard .player-status-report {
+  gap: 10px;
 }
 
 .coach-memory-strip {

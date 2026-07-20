@@ -23,6 +23,7 @@
         <nav class="side-tabs" aria-label="Dashboard sections">
           <button class="side-tab active" type="button" data-tab-target="tab-recordings">Recordings</button>
           <button class="side-tab" type="button" data-tab-target="tab-matches">Matches</button>
+          <button class="side-tab" type="button" data-tab-target="tab-status">Status</button>
           <button class="side-tab" type="button" data-tab-target="tab-memory">Memory</button>
           <button class="side-tab" type="button" data-tab-target="tab-tools">Tools</button>
         </nav>
@@ -52,8 +53,11 @@
         <section id="tab-memory" class="tab-panel">
           <h2>Coach Memory</h2>
           <div id="coachView" class="coach-view"></div>
+        </section>
+
+        <section id="tab-status" class="tab-panel">
+          <h2>Player Status</h2>
           <div class="memory-trends">
-            <h2>Trends</h2>
             <div id="trendsView" class="trends-view"></div>
           </div>
         </section>
