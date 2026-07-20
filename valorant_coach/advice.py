@@ -6,32 +6,32 @@ from .db import Database
 
 ADVICE_BY_LABEL = {
     "dry peek": {
-        "what_happened": "You likely took first contact without forcing safer information, utility pressure, or a teammate ready to trade.",
-        "better_play": "Before committing, jiggle for info or pair the swing with utility or a teammate's trade timing.",
-        "drill": "In deathmatch, take 20 fights where you jiggle or shoulder-check before the full swing.",
+        "what_happened": "You took a fight before making it safe or tradeable.",
+        "better_play": "Jiggle for info first, then swing only with utility, cover, or a teammate ready to trade.",
+        "drill": "In deathmatch, take 20 fights where you shoulder-check before the full swing.",
     },
     "crosshair too low/wide": {
-        "what_happened": "Your crosshair placement likely made the fight harder before the enemy appeared.",
+        "what_happened": "Your crosshair probably made the duel harder before the enemy appeared.",
         "better_play": "Pre-aim the next likely head-height angle before moving into the lane.",
         "drill": "Play one deathmatch where score does not matter and every corner must be pre-aimed at head height.",
     },
     "exposed to multiple angles": {
-        "what_happened": "You entered a position where more than one enemy angle could punish you at the same time.",
-        "better_play": "Slice the space into one fight at a time and use cover or utility to block the second angle.",
+        "what_happened": "You exposed yourself to more than one punish angle.",
+        "better_play": "Clear one angle at a time. Use cover or utility to remove the second angle before committing.",
         "drill": "On the map in custom mode, walk your common routes and name each angle before you expose yourself.",
     },
     "poor reposition after contact": {
-        "what_happened": "After first contact, you likely stayed in a predictable fight instead of resetting the duel.",
+        "what_happened": "After contact, you stayed predictable instead of resetting the duel.",
         "better_play": "After contact, break line of sight, change elevation, or move to a new off-angle before fighting again.",
         "drill": "In deathmatch, after every shot burst, strafe back to cover or move before repeeking.",
     },
     "isolated from team": {
-        "what_happened": "The death likely happened before a teammate could trade or support the fight.",
-        "better_play": "Wait for teammate spacing, utility, or a timing cue before taking the committed duel.",
+        "what_happened": "You died before a teammate could trade or support the fight.",
+        "better_play": "Delay contact until a teammate is close enough to trade or your utility creates the timing.",
         "drill": "For five ranked rounds, say who can trade you before you take first contact.",
     },
     "repeated same-angle fight": {
-        "what_happened": "You likely challenged a known angle again without changing the fight condition.",
+        "what_happened": "You challenged a known angle again without changing the fight condition.",
         "better_play": "Change timing, position, or utility before taking the same fight again.",
         "drill": "Review three rounds and write the alternative angle you could have used after first contact.",
     },
@@ -41,7 +41,7 @@ ADVICE_BY_LABEL = {
         "drill": "During VOD review, pause after first contact and predict whether you should anchor, shade, or rotate.",
     },
     "utility unused before taking space": {
-        "what_happened": "You likely took space while still holding utility that could have made the fight safer.",
+        "what_happened": "You took space while holding utility that could have made the fight safer.",
         "better_play": "Spend one useful ability before first committed contact if the angle is contested.",
         "drill": "Pick one ability before each round that must be used before your first duel.",
     },
@@ -65,18 +65,17 @@ def generate_advice(db: Database, death_id: int) -> Dict[str, Any]:
     rounds = db.get_rounds(int(death["match_id"]))
 
     source = advice_source(death)
-    context = context_sentence(match, death, source, round_phase(rounds, death.get("timestamp")))
-    visual_context = vision_context(vision)
-    understanding_context = clip_understanding_context(understanding)
-    playbook_context = map_agent_context(match, primary)
+    phase = round_phase(rounds, death.get("timestamp"))
+    context = context_sentence(match, death, source, phase)
+    evidence = compact_evidence(death, vision, understanding)
     payload = {
         "death_id": death_id,
         "provider": "local-coach",
         "source": source,
         "primary_mistake": primary,
         "secondary_mistakes": secondary,
-        "what_happened": f"{context} {template['what_happened']}{visual_context}{understanding_context}{playbook_context}",
-        "better_play": round_aware_better_play(template["better_play"], primary, round_phase(rounds, death.get("timestamp"))),
+        "what_happened": f"{context} {template['what_happened']}{evidence}",
+        "better_play": round_aware_better_play(template["better_play"], primary, phase, match),
         "drill": map_agent_drill(template["drill"], match, primary),
         "confidence": max(
             float(death.get("confidence") or 0),
@@ -103,12 +102,7 @@ def context_sentence(match: Dict[str, Any], death: Dict[str, Any], source: str, 
     agent = match.get("agent") or "unknown agent"
     round_number = death.get("round_number") or "?"
     timestamp = format_ts(death.get("timestamp"))
-    basis = {
-        "clip": "Using the extracted death clip and marker context,",
-        "vod-timestamp": "Using the VOD timestamp and marker context,",
-        "manual-context": "Using the manual marker context,",
-    }[source]
-    return f"{basis} this {phase} R{round_number} death at {timestamp} on {map_name} as {agent} points to:"
+    return f"R{round_number} at {timestamp} on {map_name} as {agent}, {phase}:"
 
 
 def infer_primary_from_notes(notes: str) -> str:
@@ -126,30 +120,24 @@ def infer_primary_from_notes(notes: str) -> str:
 
 def fallback_template(primary: str) -> Dict[str, str]:
     return {
-        "what_happened": f"The marker suggests '{primary}', but there is not enough structured evidence for a sharper diagnosis.",
+        "what_happened": f"This marker is tagged '{primary}', but the coach needs a cleaner clip read for a sharper diagnosis.",
         "better_play": "Replay the clip, identify the last safe position, and write the decision that made the fight unfavorable.",
         "drill": "Review five similar deaths and group them by timing, angle exposure, teammate spacing, or utility usage.",
     }
 
 
-def vision_context(vision: Optional[Dict[str, Any]]) -> str:
-    if not vision:
-        return ""
-    observations = vision.get("observations") or []
-    if not observations:
-        return ""
-    return " Visual read: " + " ".join(str(item) for item in observations[:2])
-
-
-def clip_understanding_context(understanding: Dict[str, Any]) -> str:
-    if not understanding:
-        return ""
-    parts = []
-    if understanding.get("minimap_read"):
-        parts.append(str(understanding["minimap_read"]))
+def compact_evidence(death: Dict[str, Any], vision: Optional[Dict[str, Any]], understanding: Dict[str, Any]) -> str:
+    evidence = []
+    notes = str(death.get("notes") or "").strip()
+    if notes:
+        evidence.append(notes)
     if understanding.get("crosshair_read"):
-        parts.append(str(understanding["crosshair_read"]))
-    return " Clip understanding: " + " ".join(parts[:2]) if parts else ""
+        evidence.append(str(understanding["crosshair_read"]))
+    elif vision and (vision.get("observations") or []):
+        evidence.append(str((vision.get("observations") or [])[0]))
+    if not evidence:
+        return ""
+    return " Evidence: " + " ".join(short_sentence(item) for item in evidence[:2])
 
 
 def map_agent_context(match: Dict[str, Any], primary: str) -> str:
@@ -163,11 +151,17 @@ def map_agent_context(match: Dict[str, Any], primary: str) -> str:
     return "".join(notes)
 
 
-def round_aware_better_play(base: str, primary: str, phase: str) -> str:
+def round_aware_better_play(base: str, primary: str, phase: str, match: Dict[str, Any]) -> str:
+    agent = (match.get("agent") or "").lower()
+    map_name = (match.get("map") or "").lower()
     if phase == "early round" and primary in {"dry peek", "utility unused before taking space"}:
         return base + " In early round, value information and survival over a fast committed duel."
     if phase == "late round" and primary in {"late rotation / bad timing", "isolated from team"}:
         return base + " In late round, preserve trade spacing and avoid solo timing fights."
+    if agent == "jett" and primary in {"dry peek", "poor reposition after contact"}:
+        return base + " Decide your dash/reset route before first contact."
+    if map_name == "ascent" and primary in {"dry peek", "exposed to multiple angles"}:
+        return base + " On Ascent, isolate mid/lane angles before wide exposure."
     return base
 
 
@@ -202,3 +196,10 @@ def format_ts(value: Any) -> str:
         return "unknown time"
     seconds = int(float(value))
     return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def short_sentence(value: str, limit: int = 130) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "."

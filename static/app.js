@@ -1293,10 +1293,6 @@ async function loadReport(id) {
 
 function renderReport(report) {
   const match = report.match;
-  const mistakes = Object.entries(report.label_counts)
-    .map(([label, count]) => `<li><span class="tag">${escapeHtml(label)}</span> ${count}</li>`)
-    .join("");
-  const focus = report.focus.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   const deaths = report.deaths.map(renderDeathCard).join("");
   const review = renderMatchReview(report.review);
   const guidedCoach = renderGuidedCoach(report.guided_coach, match.id);
@@ -1309,52 +1305,37 @@ function renderReport(report) {
   const coachMomentsView = renderCoachMoments(coachMoments);
   const matchAnalyses = renderMatchAnalyses(report.match_analyses || {});
   const jobPanel = renderJobProgress(report.match.id);
+  const priorities = renderCoachPriorities(report, coachMoments);
+  const manualMarkerForm = renderManualMarkerForm(match.id);
 
   els.reportView.innerHTML = `
     <div id="jobProgressMount">${jobPanel}</div>
-    <div class="summary-grid">
-      <div class="metric"><span>Map</span><strong>${escapeHtml(match.map || "Unknown")}</strong></div>
-      <div class="metric"><span>Agent</span><strong>${escapeHtml(match.agent || "Unknown")}</strong></div>
-      <div class="metric"><span>Status</span><strong>${escapeHtml(match.status)}</strong></div>
-      <div class="metric"><span>Deaths</span><strong>${report.deaths.length}</strong></div>
-    </div>
-    ${guidedCoach}
     <section class="player-wrap">
-      <h3>VOD Player</h3>
+      <div class="review-head">
+        <h3>${escapeHtml(match.map || "Unknown map")} / ${escapeHtml(match.agent || "Unknown agent")}</h3>
+        <span class="tag">${report.deaths.length} marked death(s)</span>
+      </div>
       <div class="calibration-stage">
         <video id="vodPlayer" controls preload="metadata" src="/api/matches/${match.id}/video"></video>
         <div id="calibrationOverlay" class="calibration-overlay hidden"></div>
       </div>
       ${timeline}
     </section>
+    ${priorities}
+    ${guidedCoach}
+    ${suggestions}
     ${coachMomentsView}
     <section>
-      <h3>Add Death Marker</h3>
-      <div class="add-death">
-        <label>Round <input id="newRound" type="number" min="1" placeholder="1" /></label>
-        <label>Time sec <input id="newTimestamp" type="number" min="0" step="0.1" placeholder="82.4" /></label>
-        <label>Labels <input id="newLabels" type="text" placeholder="dry peek, exposed to multiple angles" /></label>
-        <div class="preset-row wide" data-preset-target="newLabels">${renderPresetButtons()}</div>
-        <label class="wide">Notes <input id="newNotes" type="text" placeholder="What happened before the death?" /></label>
-        <button data-action="add-death" data-id="${match.id}">Add Death</button>
+      <div class="review-head">
+        <h3>Death Review</h3>
+        <span class="muted">Open the first 3, not every card.</span>
       </div>
-    </section>
-    ${suggestions}
-    ${review}
-    <section>
-      <h3>Recurring Mistakes</h3>
-      <ul class="mistake-list">${mistakes || "<li>No labeled mistakes yet.</li>"}</ul>
-    </section>
-    <section>
-      <h3>Next Session Focus</h3>
-      <ul class="focus-list">${focus}</ul>
-    </section>
-    <section>
-      <h3>Death Review</h3>
       <div>${deaths || '<p class="muted">No deaths marked yet.</p>'}</div>
     </section>
     <details class="advanced-actions">
-      <summary>Advanced match analysis</summary>
+      <summary>Manual tools and advanced analysis</summary>
+      ${manualMarkerForm}
+      ${review}
       <section>
         <h3>Detector Benchmarking</h3>
         <div class="add-death">
@@ -1377,6 +1358,95 @@ function renderReport(report) {
     </details>
   `;
   attachVideoTimelineSync();
+}
+
+function renderManualMarkerForm(matchId) {
+  return `
+    <section>
+      <h3>Add Death Marker</h3>
+      <div class="add-death">
+        <label>Round <input id="newRound" type="number" min="1" placeholder="1" /></label>
+        <label>Time sec <input id="newTimestamp" type="number" min="0" step="0.1" placeholder="82.4" /></label>
+        <label>Labels <input id="newLabels" type="text" placeholder="dry peek, exposed to multiple angles" /></label>
+        <div class="preset-row wide" data-preset-target="newLabels">${renderPresetButtons()}</div>
+        <label class="wide">Notes <input id="newNotes" type="text" placeholder="What happened before the death?" /></label>
+        <button data-action="add-death" data-id="${matchId}">Add Death</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderCoachPriorities(report, coachMoments) {
+  const labelItems = Object.entries(report.label_counts || {})
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, 3);
+  const deathWithAdvice = (report.deaths || []).find((death) => death.advice);
+  const firstMoment = (coachMoments || [])[0];
+  const focusItems = (report.focus || []).slice(0, 3);
+  const cards = [];
+
+  if (labelItems.length) {
+    const [label, count] = labelItems[0];
+    cards.push(`
+      <article class="priority-card">
+        <span>Pattern</span>
+        <strong>${escapeHtml(label)}</strong>
+        <p>Appears in ${escapeHtml(count)} marked death(s). Review only the first few clips and look for the decision before contact.</p>
+      </article>
+    `);
+  }
+  if (deathWithAdvice) {
+    cards.push(`
+      <article class="priority-card">
+        <span>Best Starting Clip</span>
+        <strong>R${deathWithAdvice.round_number || "?"} @ ${formatTs(deathWithAdvice.timestamp)}</strong>
+        <p>${escapeHtml(deathWithAdvice.advice.better_play || deathWithAdvice.advice.what_happened || "Open this marker first.")}</p>
+        <button class="secondary" data-action="jump" data-ts="${escapeAttr(deathWithAdvice.timestamp || 0)}">Review Clip</button>
+      </article>
+    `);
+  } else if ((report.deaths || []).length) {
+    const firstDeath = report.deaths[0];
+    cards.push(`
+      <article class="priority-card">
+        <span>Start Here</span>
+        <strong>R${firstDeath.round_number || "?"} @ ${formatTs(firstDeath.timestamp)}</strong>
+        <p>Generate advice for this marker, then accept or reject it so the coach learns what is useful.</p>
+        <button class="secondary" data-action="advice" data-id="${firstDeath.id}">Generate Advice</button>
+      </article>
+    `);
+  }
+  if (firstMoment) {
+    cards.push(`
+      <article class="priority-card">
+        <span>Non-Death Habit</span>
+        <strong>${escapeHtml(firstMoment.title || firstMoment.label || "Coach moment")}</strong>
+        <p>${escapeHtml((firstMoment.ai_review || {}).better_play || firstMoment.better_play || firstMoment.reason || "Review this whole-VOD moment.")}</p>
+        <button class="secondary" data-action="jump" data-ts="${escapeAttr(firstMoment.timestamp || 0)}">Jump</button>
+      </article>
+    `);
+  }
+  if (!cards.length) {
+    cards.push(`
+      <article class="priority-card">
+        <span>Next Step</span>
+        <strong>Build clean review data</strong>
+        <p>Run Auto Coach or Find Deaths, accept real deaths, reject noise, then generate advice on the first confirmed marker.</p>
+      </article>
+    `);
+  }
+  const focus = focusItems.length
+    ? `<ul class="compact-list">${focusItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : "";
+  return `
+    <section class="coach-priorities">
+      <div class="review-head">
+        <h3>Coach Priorities</h3>
+        <span class="muted">The next things to review.</span>
+      </div>
+      <div class="priority-grid">${cards.join("")}</div>
+      ${focus ? `<details><summary>More focus notes</summary>${focus}</details>` : ""}
+    </section>
+  `;
 }
 
 function renderJobProgress(matchId) {
@@ -1535,7 +1605,7 @@ function renderVideoTimeline(deaths, suggestions, coachMoments = []) {
 function renderCoachMoments(moments) {
   if (!moments.length) {
     return `
-      <section>
+      <section class="coach-moments-section empty">
         <h3>Coach Moments</h3>
         <p class="muted">Run Full VOD Coach to find mechanics and decision moments outside obvious deaths.</p>
       </section>
@@ -1552,11 +1622,11 @@ function renderCoachMoments(moments) {
           <button class="ghost" data-action="jump" data-ts="${escapeAttr(item.timestamp || 0)}">${formatTs(item.timestamp)}</button>
           <div>
             <strong>${index + 1}. ${escapeHtml(item.title || "Coach moment")}</strong>
-            <p class="muted">${escapeHtml(item.valorant_context?.map || "unknown map")} / ${escapeHtml(item.valorant_context?.agent || "unknown agent")} · priority ${escapeHtml(item.priority || 0)}</p>
+            <p class="muted">Priority ${escapeHtml(item.priority || 0)}</p>
           </div>
         </div>
-        <p>${escapeHtml(ai.summary || item.reason || "")}</p>
-        <p><strong>Better play:</strong> ${escapeHtml(ai.better_play || item.better_play || "")}</p>
+        <p>${escapeHtml(ai.summary || item.reason || "Review this timestamp for a possible habit leak.")}</p>
+        <p class="coach-action"><strong>Do this:</strong> ${escapeHtml(ai.better_play || item.better_play || "Replay the moment and identify the safer decision before contact.")}</p>
         ${ai.drill ? `<p><strong>Drill:</strong> ${escapeHtml(ai.drill)}</p>` : ""}
         <div>${labels}</div>
         <div class="coach-moment-feedback">
@@ -1569,9 +1639,11 @@ function renderCoachMoments(moments) {
     `;
   }).join("");
   return `
-    <section>
-      <h3>Coach Moments</h3>
-      <p class="muted">These are non-death review points from full-match scanning. Start with the first three before reviewing deaths.</p>
+    <section class="coach-moments-section">
+      <div class="review-head">
+        <h3>Whole-VOD Coach Moments</h3>
+        <span class="muted">Top ${Math.min(10, moments.length)} only</span>
+      </div>
       <div class="coach-moment-list">${cards}</div>
     </section>
   `;
@@ -1627,9 +1699,9 @@ function attachVideoTimelineSync() {
 function renderSuggestions(suggestions) {
   if (!suggestions.length) {
     return `
-      <section>
+      <section class="suggestion-section empty">
         <h3>Suggested Deaths</h3>
-        <p class="muted">No pending suggestions. Use Suggest Deaths from the match card after ffmpeg is installed.</p>
+        <p class="muted">No pending death candidates. Confirmed markers are shown in Death Review.</p>
       </section>
     `;
   }
@@ -1640,26 +1712,31 @@ function renderSuggestions(suggestions) {
       <article class="suggestion-card" data-suggestion-id="${item.id}">
         ${frame}
         <div>
-          <strong>@ ${formatTs(item.timestamp)}</strong>
+          <strong>Possible death @ ${formatTs(item.timestamp)}</strong>
           <span class="tag">${Math.round(Number(item.confidence || 0) * 100)}%</span>
-          <p class="muted">${escapeHtml(item.reason)}</p>
-          <label>Labels <input data-field="suggestion_labels" type="text" value="needs manual review" /></label>
-          <div class="preset-row" data-preset-field="suggestion_labels">${renderPresetButtons()}</div>
-          <label>Notes <input data-field="suggestion_notes" type="text" value="${escapeAttr(item.reason)}" /></label>
-          <div class="row">
+          <p>${escapeHtml(shortenText(item.reason, 150))}</p>
+          <details class="advanced-actions">
+            <summary>Edit labels before accepting</summary>
+            <label>Labels <input data-field="suggestion_labels" type="text" value="needs manual review" /></label>
+            <div class="preset-row" data-preset-field="suggestion_labels">${renderPresetButtons()}</div>
+            <label>Notes <input data-field="suggestion_notes" type="text" value="${escapeAttr(item.reason)}" /></label>
+          </details>
+          <div class="suggestion-actions">
             <button data-action="accept-suggestion" data-id="${item.id}" data-ts="${item.timestamp}">Accept</button>
             <button class="danger" data-action="reject-suggestion" data-id="${item.id}">Reject</button>
-            <button class="secondary" data-action="benchmark-false-positive" data-id="${item.id}" data-match="${currentMatchId}" data-ts="${item.timestamp}">False Positive</button>
             <button class="secondary" data-action="jump" data-ts="${item.timestamp}">Jump</button>
+            <button class="ghost" data-action="benchmark-false-positive" data-id="${item.id}" data-match="${currentMatchId}" data-ts="${item.timestamp}">False Positive</button>
           </div>
         </div>
       </article>
     `;
   }).join("");
   return `
-    <section>
-      <h3>Suggested Deaths (${suggestions.length})</h3>
-      <p class="muted">These are detector candidates. Click a timeline marker or Jump, verify the moment in the video, then accept real deaths and reject noise.</p>
+    <section class="suggestion-section">
+      <div class="review-head">
+        <h3>Pending Death Candidates</h3>
+        <span class="muted">${suggestions.length} to verify</span>
+      </div>
       <div class="suggestion-list">${cards}</div>
     </section>
   `;
@@ -1672,7 +1749,7 @@ function renderGuidedCoach(row, matchId) {
       <section class="guided-coach empty">
         <div>
           <h3>Coach Mode</h3>
-          <p class="muted">Let the agent pick the review order, generate advice for marked deaths, and tell you what to look for.</p>
+          <p class="muted">Generate a short review order after markers are confirmed.</p>
         </div>
         <button data-action="guided-coach" data-id="${matchId}">Coach This Match</button>
       </section>
@@ -1684,8 +1761,8 @@ function renderGuidedCoach(row, matchId) {
       <div>
         <strong>${escapeHtml(item.title || `Step ${item.rank}`)}</strong>
         <p>${escapeHtml(item.reason || "")}</p>
-        <p><strong>Ask:</strong> ${escapeHtml(item.pause_question || "")}</p>
-        <p><strong>Coach:</strong> ${escapeHtml(item.coach_action || "")}</p>
+        ${item.pause_question ? `<p><strong>Check:</strong> ${escapeHtml(item.pause_question)}</p>` : ""}
+        ${item.coach_action ? `<p><strong>Do:</strong> ${escapeHtml(item.coach_action)}</p>` : ""}
       </div>
     </li>
   `).join("");
@@ -1697,8 +1774,8 @@ function renderGuidedCoach(row, matchId) {
         <strong>${Math.round(Number(coach.confidence || 0) * 100)}%</strong>
       </div>
       <p>${escapeHtml(coach.summary || "")}</p>
-      <p><strong>Coach read:</strong> ${escapeHtml(coach.coach_read || "")}</p>
-      <p><strong>Round rule:</strong> ${escapeHtml(coach.between_round_rule || "")}</p>
+      ${coach.coach_read ? `<p><strong>Read:</strong> ${escapeHtml(coach.coach_read)}</p>` : ""}
+      ${coach.between_round_rule ? `<p><strong>Round rule:</strong> ${escapeHtml(coach.between_round_rule)}</p>` : ""}
       <ol class="coach-steps">${items}</ol>
       <details class="advanced-actions">
         <summary>Practice plan</summary>
@@ -1751,25 +1828,25 @@ function renderDeathCard(death) {
     <article class="death-card" data-death-id="${death.id}">
       <div class="death-card-header">
         <div class="death-card-title">
-          <strong>R${death.round_number || "?"} @ ${formatTs(death.timestamp)}</strong>
+          <strong>R${death.round_number || "?"} · ${formatTs(death.timestamp)}</strong>
           ${renderTags(death.mistake_labels || [])}
         </div>
         <button class="secondary" data-action="jump" data-ts="${death.timestamp || 0}">Jump</button>
-        <button class="secondary" data-action="advice" data-id="${death.id}">Get Advice</button>
-        <button class="secondary" data-action="local-ai-review" data-id="${death.id}">Local AI</button>
-        ${clip}
+        <button data-action="advice" data-id="${death.id}">${death.advice ? "Refresh Advice" : "Get Advice"}</button>
       </div>
-      <p class="muted">${escapeHtml(death.notes || "")}</p>
+      ${death.notes ? `<p class="death-note">${escapeHtml(shortenText(death.notes, 180))}</p>` : ""}
       ${advice}
       <details class="advanced-actions">
-        <summary>Clip analysis and edit tools</summary>
+        <summary>Clip, AI, and edit tools</summary>
         <div class="row">
+          <button class="secondary" data-action="local-ai-review" data-id="${death.id}">Local AI</button>
           <button class="secondary" data-action="vision" data-id="${death.id}">Analyze Clip</button>
           <button class="secondary" data-action="keyframes" data-id="${death.id}">Keyframes</button>
           <button class="secondary" data-action="understand" data-id="${death.id}">Understand</button>
           <button class="secondary" data-action="gameplay" data-id="${death.id}">Gameplay</button>
           <button class="secondary" data-action="ai-review" data-id="${death.id}">AI Review</button>
           <button class="secondary" data-action="benchmark-true-positive" data-id="${death.id}" data-match="${death.match_id}" data-ts="${death.timestamp || 0}">True Positive</button>
+          ${clip}
         </div>
         ${vision}
         ${keyframes}
@@ -1913,21 +1990,21 @@ function renderPresetButtons() {
 
 function renderAdvice(advice) {
   if (!advice) {
-    return '<div class="advice-empty">No advice generated yet.</div>';
+    return '<div class="advice-empty">No coach read yet. Click Get Advice after confirming this marker.</div>';
   }
   const secondary = (advice.secondary_mistakes || []).length
-    ? `<p><strong>Secondary:</strong> ${escapeHtml(advice.secondary_mistakes.join(", "))}</p>`
+    ? `<p class="muted">Also check: ${escapeHtml(advice.secondary_mistakes.join(", "))}</p>`
     : "";
   return `
     <div class="advice-box">
       <div class="advice-head">
-        <strong>${escapeHtml(advice.primary_mistake)}</strong>
-        <span>${escapeHtml(advice.provider)} · ${escapeHtml(advice.source)} · ${Math.round(Number(advice.confidence || 0) * 100)}%</span>
+        <strong>${escapeHtml(titleCase(advice.primary_mistake))}</strong>
+        <span>${Math.round(Number(advice.confidence || 0) * 100)}%</span>
       </div>
       ${secondary}
-      <p><strong>Read:</strong> ${escapeHtml(advice.what_happened)}</p>
-      <p><strong>Better play:</strong> ${escapeHtml(advice.better_play)}</p>
-      <p><strong>Drill:</strong> ${escapeHtml(advice.drill)}</p>
+      <p class="coach-read">${escapeHtml(advice.what_happened)}</p>
+      <p class="coach-action"><strong>Do this:</strong> ${escapeHtml(advice.better_play)}</p>
+      <p><strong>Practice:</strong> ${escapeHtml(advice.drill)}</p>
       <div class="advice-actions">
         <button class="secondary" data-action="advice-feedback" data-id="${advice.id}" data-verdict="accepted">Accept</button>
         <button class="danger" data-action="advice-feedback" data-id="${advice.id}" data-verdict="rejected">Reject</button>
@@ -1935,6 +2012,19 @@ function renderAdvice(advice) {
       </div>
     </div>
   `;
+}
+
+function shortenText(value, maxLength = 160) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}...`;
+}
+
+function titleCase(value) {
+  return String(value || "")
+    .split(" ")
+    .map((part) => part ? part[0].toUpperCase() + part.slice(1) : part)
+    .join(" ");
 }
 
 function renderTags(labels) {
@@ -1947,7 +2037,7 @@ function applyPreset(button) {
   const field = button.parentElement.dataset.presetField;
   const input = targetId
     ? document.querySelector(`#${targetId}`)
-    : button.closest(".death-editor").querySelector(`[data-field="${field}"]`);
+    : button.closest(".death-editor, .suggestion-card").querySelector(`[data-field="${field}"]`);
   if (!input) return;
   const labels = input.value
     .split(",")

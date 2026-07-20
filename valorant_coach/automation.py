@@ -925,7 +925,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.10.2-local"
+APP_VERSION = "0.10.3-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -936,6 +936,8 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Simplify the match review UI around video, coach priorities, readable suggestions, and compact advice cards.",
+            "Shorten generated advice into one diagnosis, one action, and one practice item.",
             "Confirmed death markers are preserved when Auto Coach, Analyze, or Find Deaths runs.",
             "Duplicate death suggestions near accepted, rejected, or already marked deaths are skipped.",
             "Coach moment feedback and LM Studio connection testing for better local model setup and personalization.",

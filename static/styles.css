@@ -245,7 +245,7 @@ button:hover {
 
 .report-view {
   display: grid;
-  gap: 16px;
+  gap: 14px;
 }
 
 .report-view > section,
@@ -256,6 +256,51 @@ button:hover {
 .player-wrap {
   display: grid;
   gap: 10px;
+}
+
+.coach-priorities {
+  display: grid;
+  gap: 10px;
+}
+
+.priority-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.priority-card {
+  display: grid;
+  gap: 7px;
+  min-height: 136px;
+  padding: 12px;
+  border: 1px solid #bdd6d2;
+  border-left: 5px solid var(--teal);
+  border-radius: 8px;
+  background: #f8fffd;
+}
+
+.priority-card span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.priority-card strong {
+  font-size: 16px;
+}
+
+.priority-card p {
+  margin: 0;
+  color: #26313f;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.priority-card button {
+  width: fit-content;
+  padding: 7px 10px;
+  font-size: 12px;
 }
 
 .video-timeline {
@@ -412,9 +457,9 @@ video {
 .death-card {
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 12px;
+  padding: 14px;
   background: #fff;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .death-card-header,
@@ -432,6 +477,13 @@ video {
   flex-wrap: wrap;
   gap: 6px;
   margin-right: auto;
+}
+
+.death-note {
+  margin-top: 9px;
+  color: #394553;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .advanced-actions {
@@ -569,9 +621,9 @@ video {
 
 .advice-box {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   margin-top: 10px;
-  padding: 11px;
+  padding: 12px;
   border: 1px solid #c9d9d6;
   border-left: 5px solid var(--teal);
   border-radius: 8px;
@@ -581,7 +633,7 @@ video {
 .advice-box p {
   margin: 0;
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.5;
 }
 
 .advice-head {
@@ -594,6 +646,17 @@ video {
 .advice-head span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.coach-read {
+  color: #26313f;
+}
+
+.coach-action {
+  padding: 9px;
+  border-radius: 6px;
+  background: #edf6f4;
+  color: #173d39;
 }
 
 .advice-actions {
@@ -891,6 +954,10 @@ video {
   gap: 10px;
 }
 
+.coach-moments-section.empty {
+  display: none;
+}
+
 .coach-moment-card {
   display: grid;
   gap: 8px;
@@ -1049,31 +1116,51 @@ video {
 .suggestion-list {
   display: grid;
   gap: 10px;
-  max-height: 520px;
+  max-height: 420px;
   overflow: auto;
   padding-right: 4px;
 }
 
 .suggestion-card {
   display: grid;
-  grid-template-columns: 120px minmax(0, 1fr);
+  grid-template-columns: 132px minmax(0, 1fr);
   gap: 12px;
   padding: 12px;
   border: 1px solid var(--line);
+  border-left: 5px solid var(--yellow);
   border-radius: 8px;
-  background: #fff;
+  background: #fffdf5;
 }
 
 .suggestion-frame {
-  width: 120px;
+  width: 132px;
   aspect-ratio: 16 / 9;
   object-fit: cover;
   border-radius: 6px;
   background: #111;
 }
 
+.suggestion-card p {
+  margin: 6px 0 0;
+  color: #394553;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .suggestion-card label {
   margin: 8px 0;
+}
+
+.suggestion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.suggestion-actions button {
+  padding: 7px 10px;
+  font-size: 12px;
 }
 
 .review-head {
@@ -1151,6 +1238,10 @@ video {
 
   .summary-grid {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .priority-grid {
+    grid-template-columns: 1fr;
   }
 
   .death-editor,
