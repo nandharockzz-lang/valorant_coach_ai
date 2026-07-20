@@ -11,6 +11,7 @@ def build_report(db: Database, match_id: int) -> Dict[str, Any]:
         raise ValueError(f"Unknown match id: {match_id}")
     rounds = db.get_rounds(match_id)
     deaths = db.get_deaths(match_id)
+    enrich_deaths_with_display_rounds(deaths, rounds)
     review = db.get_latest_match_review(match_id)
     suggestions = db.get_death_suggestions(match_id)
     match_analyses = {
@@ -79,6 +80,60 @@ def recommendation_for(label: str, count: int) -> str:
     return f"{label} x{count}: {base}"
 
 
+def enrich_deaths_with_display_rounds(deaths: List[Dict[str, Any]], rounds: List[Dict[str, Any]]) -> None:
+    """Attach a UI-safe round label without pretending an estimate is confirmed data."""
+    for death in deaths:
+        if death.get("round_number"):
+            death["display_round_number"] = int(death["round_number"])
+            death["round_source"] = "confirmed"
+            continue
+        inferred = infer_round_from_timeline(rounds, death.get("timestamp"))
+        if inferred:
+            death["display_round_number"] = inferred
+            death["round_source"] = "timeline"
+            continue
+        estimated = estimate_round_from_death_spacing(deaths, death)
+        if estimated:
+            death["display_round_number"] = estimated
+            death["round_source"] = "estimated"
+
+
+def infer_round_from_timeline(rounds: List[Dict[str, Any]], timestamp: Any) -> int:
+    if timestamp is None:
+        return 0
+    ts = float(timestamp)
+    for item in rounds:
+        start = float(item.get("start_ts") or 0)
+        end = item.get("end_ts")
+        if ts < start:
+            continue
+        if end is not None and ts > float(end):
+            continue
+        return int(item.get("round_number") or 0)
+    return 0
+
+
+def estimate_round_from_death_spacing(deaths: List[Dict[str, Any]], target: Dict[str, Any]) -> int:
+    if target.get("timestamp") is None:
+        return 0
+    timed = sorted(
+        (death for death in deaths if death.get("timestamp") is not None),
+        key=lambda death: (float(death["timestamp"]), int(death.get("id") or 0)),
+    )
+    if not timed:
+        return 0
+    current_round = 1
+    previous_ts = float(timed[0]["timestamp"])
+    for death in timed:
+        ts = float(death["timestamp"])
+        if ts - previous_ts > 55:
+            current_round += 1
+        if int(death.get("id") or 0) == int(target.get("id") or -1):
+            return current_round
+        previous_ts = ts
+    return 0
+
+
 def render_markdown(report: Dict[str, Any]) -> str:
     match = report["match"]
     lines = [
@@ -123,7 +178,12 @@ def render_markdown(report: Dict[str, Any]) -> str:
     for death in report["deaths"]:
         labels = ", ".join(death.get("mistake_labels") or ["unlabeled"])
         ts = format_ts(death.get("timestamp"))
-        round_label = f"Round {death.get('round_number')}" if death.get("round_number") else "Round unknown"
+        if death.get("round_number"):
+            round_label = f"Round {death.get('round_number')}"
+        elif death.get("display_round_number"):
+            round_label = f"Est. Round {death.get('display_round_number')}"
+        else:
+            round_label = "Round unknown"
         lines.append(f"- {round_label} @ {ts}: {labels}. {death.get('notes') or ''}".rstrip())
         if death.get("advice"):
             advice = death["advice"]

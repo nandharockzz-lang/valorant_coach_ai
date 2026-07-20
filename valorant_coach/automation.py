@@ -939,7 +939,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.12.1-local"
+APP_VERSION = "0.12.2-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -950,6 +950,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Add a visual Player Status report and display timeline/spacing-based round estimates when stored round numbers are missing.",
             "Make Coach Memory collapsible, keep the left tab panel scroll-contained, and show immediate Clip Coach loading status.",
             "Redesign the UI with a dark theme, tabbed left dashboard, and compact Coach Memory strip in Review.",
             "Add runtime Local AI FPS override controls with quick FPS presets.",

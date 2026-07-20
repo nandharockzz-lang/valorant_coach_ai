@@ -1420,6 +1420,7 @@ function renderReport(report) {
   const jobPanel = renderJobProgress(report.match.id);
   const priorities = renderCoachPriorities(report, coachMoments);
   const memoryStrip = renderCoachMemoryStrip(latestCoachDashboard);
+  const playerStatus = renderPlayerStatusReport(report, coachMoments);
   const manualMarkerForm = renderManualMarkerForm(match.id);
 
   els.reportView.innerHTML = `
@@ -1436,6 +1437,7 @@ function renderReport(report) {
       ${timeline}
     </section>
     ${memoryStrip}
+    ${playerStatus}
     ${priorities}
     ${guidedCoach}
     ${suggestions}
@@ -1501,6 +1503,169 @@ function renderCoachMemoryStrip(coach) {
       </div>
     </details>
   `;
+}
+
+function renderPlayerStatusReport(report, coachMoments = []) {
+  const deaths = report.deaths || [];
+  const suggestions = report.suggestions || [];
+  const deathCount = deaths.length;
+  const reviewedCount = deaths.filter((death) => death.advice || death.local_ai_review).length;
+  const localAiCount = deaths.filter((death) => death.local_ai_review).length;
+  const roundKnownCount = deaths.filter((death) => death.round_number).length;
+  const roundDisplayCount = deaths.filter((death) => death.round_number || death.display_round_number).length;
+  const causeCounts = collectDeathCauseCounts(deaths);
+  const labelCounts = collectStoredLabelCounts(report);
+  const phaseCounts = collectPhaseCounts(deaths);
+  const roundCounts = collectRoundCounts(deaths);
+  const topCause = topCount(causeCounts);
+  const topStored = topCount(labelCounts);
+  const reviewPct = percent(reviewedCount, deathCount);
+  const roundPct = percent(roundDisplayCount, deathCount);
+  const confirmedRoundText = `${roundKnownCount}/${deathCount}`;
+  const roundHelp = roundKnownCount === deathCount
+    ? "All death markers have confirmed round numbers."
+    : `${roundDisplayCount - roundKnownCount} marker(s) are using timeline/spacing estimates until OCR or manual save confirms them.`;
+
+  return `
+    <section class="player-status-report">
+      <div class="review-head">
+        <h3>Player Status</h3>
+        <span class="muted">Built from parsed markers, advice, Clip Coach reads, and VOD moments.</span>
+      </div>
+      <div class="status-metric-grid">
+        <article class="status-metric">
+          <span>Deaths Marked</span>
+          <strong>${deathCount}</strong>
+          <p>${suggestions.length} pending suggestion(s)</p>
+        </article>
+        <article class="status-metric">
+          <span>Review Coverage</span>
+          <strong>${reviewPct}%</strong>
+          <p>${reviewedCount}/${deathCount || 0} have advice or Clip Coach</p>
+          ${renderMiniProgress(reviewPct)}
+        </article>
+        <article class="status-metric">
+          <span>Primary Cause</span>
+          <strong>${escapeHtml(titleCase(topCause?.[0] || topStored?.[0] || "not enough data"))}</strong>
+          <p>${topCause ? `${topCause[1]} supporting read(s)` : "Run Clip Coach or save labels."}</p>
+        </article>
+        <article class="status-metric">
+          <span>Round Coverage</span>
+          <strong>${roundPct}%</strong>
+          <p>${confirmedRoundText} confirmed. ${roundHelp}</p>
+          ${renderMiniProgress(roundPct)}
+        </article>
+      </div>
+      <div class="player-graph-grid">
+        ${renderStatusPanel("Mistakes From Saved Markers", labelCounts, deathCount, "Save corrected labels to improve this chart.")}
+        ${renderStatusPanel("Death Causes From Coach Reads", causeCounts, Math.max(1, reviewedCount + localAiCount), "Generate advice or Clip Coach reviews for clearer causes.")}
+        ${renderStatusPanel("Deaths By Round Phase", phaseCounts, deathCount, "Round phase uses reconstructed round timing when available.")}
+        ${renderStatusPanel("Deaths By Round", roundCounts, deathCount, "Estimated rounds are marked until scoreboard OCR/manual save confirms them.")}
+      </div>
+      ${coachMoments.length ? `<p class="muted">${coachMoments.length} whole-VOD coach moment(s) found outside death markers.</p>` : ""}
+    </section>
+  `;
+}
+
+function collectStoredLabelCounts(report) {
+  const counts = {};
+  for (const [label, count] of Object.entries(report.label_counts || {})) {
+    addCount(counts, label, Number(count || 0));
+  }
+  return counts;
+}
+
+function collectDeathCauseCounts(deaths) {
+  const counts = {};
+  for (const death of deaths || []) {
+    const seen = new Set();
+    for (const label of death.mistake_labels || []) {
+      if (label && label !== "needs manual review") seen.add(label);
+    }
+    if (death.advice?.primary_mistake) seen.add(death.advice.primary_mistake);
+    const localPayload = death.local_ai_review?.payload || {};
+    for (const label of localPayload.labels || []) {
+      if (label) seen.add(label);
+    }
+    for (const label of seen) addCount(counts, label, 1);
+  }
+  return counts;
+}
+
+function collectPhaseCounts(deaths) {
+  const counts = {};
+  for (const death of deaths || []) {
+    addCount(counts, death.round_phase || "unknown", 1);
+  }
+  return counts;
+}
+
+function collectRoundCounts(deaths) {
+  const counts = {};
+  for (const death of deaths || []) {
+    const number = death.round_number || death.display_round_number;
+    const source = death.round_number ? "" : death.display_round_number ? " est." : "";
+    addCount(counts, number ? `R${number}${source}` : "unknown", 1);
+  }
+  return counts;
+}
+
+function renderStatusPanel(title, counts, total, emptyText) {
+  const bars = renderStatusBars(counts, total);
+  return `
+    <article class="status-panel">
+      <div class="analysis-head">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${Object.keys(counts || {}).length}</span>
+      </div>
+      ${bars || `<p class="muted">${escapeHtml(emptyText)}</p>`}
+    </article>
+  `;
+}
+
+function renderStatusBars(counts, total, limit = 6) {
+  const entries = Object.entries(counts || {})
+    .filter(([, count]) => Number(count) > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, limit);
+  if (!entries.length) return "";
+  const divisor = Math.max(1, Number(total || 0), ...entries.map(([, count]) => Number(count || 0)));
+  return `
+    <div class="status-bars">
+      ${entries.map(([label, count]) => {
+        const width = Math.max(6, Math.round((Number(count || 0) / divisor) * 100));
+        return `
+          <div class="status-bar-row">
+            <div>
+              <span>${escapeHtml(titleCase(label))}</span>
+              <strong>${escapeHtml(count)}</strong>
+            </div>
+            <i style="width:${width}%"></i>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderMiniProgress(value) {
+  const width = Math.max(0, Math.min(100, Number(value || 0)));
+  return `<div class="mini-progress"><span style="width:${width}%"></span></div>`;
+}
+
+function addCount(counts, key, amount = 1) {
+  const label = String(key || "").trim().toLowerCase();
+  if (!label) return;
+  counts[label] = (counts[label] || 0) + Number(amount || 0);
+}
+
+function topCount(counts) {
+  return Object.entries(counts || {}).sort((a, b) => Number(b[1]) - Number(a[1]))[0] || null;
+}
+
+function percent(part, total) {
+  if (!total) return 0;
+  return Math.round((Number(part || 0) / Number(total)) * 100);
 }
 
 function renderManualMarkerForm(matchId) {
@@ -2433,6 +2598,10 @@ function formatDeathTime(death) {
   const timestamp = formatTs(death.timestamp);
   if (death.round_number) {
     return `Round ${death.round_number} · ${timestamp}`;
+  }
+  if (death.display_round_number) {
+    const source = death.round_source === "timeline" ? "timeline" : "est.";
+    return `Round ${death.display_round_number} (${source}) · ${timestamp}`;
   }
   return `${timestamp} · Round unknown`;
 }
