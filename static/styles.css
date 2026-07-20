@@ -463,6 +463,26 @@ video {
   resize: vertical;
 }
 
+.metadata-editor {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f8fa;
+}
+
+.metadata-editor label {
+  margin: 0;
+}
+
+.timeline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .json-small {
   max-height: 140px;
   overflow: auto;

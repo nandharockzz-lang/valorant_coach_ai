@@ -61,7 +61,7 @@ async function loadSettings() {
 }
 
 async function loadAutomation() {
-  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi] = await Promise.all([
+  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, setup, prompts, tuning, modelAudit, sessionReport] = await Promise.all([
     api("/api/settings"),
     api("/api/jobs"),
     api("/api/watcher"),
@@ -80,6 +80,11 @@ async function loadAutomation() {
     api("/api/evaluation"),
     api("/api/plugins"),
     api("/api/local-ai"),
+    api("/api/setup"),
+    api("/api/prompts"),
+    api("/api/detector/tuning"),
+    api("/api/privacy/model-audit"),
+    api("/api/sessions/report"),
   ]);
   renderAutomation(
     settings,
@@ -99,11 +104,16 @@ async function loadAutomation() {
     diagnostics,
     evaluation,
     plugins,
-    localAi
+    localAi,
+    setup,
+    prompts,
+    tuning,
+    modelAudit,
+    sessionReport
   );
 }
 
-function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi) {
+function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, setup, prompts, tuning, modelAudit, sessionReport) {
   const jobRows = jobs.slice(0, 8).map((job) => `
     <li>
       <strong>#${job.id} ${escapeHtml(job.name)}</strong>
@@ -140,7 +150,19 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
   const playbookOptions = Object.keys(playbooks).sort().map((key) => `<option value="${escapeAttr(key)}">${escapeHtml(key)}</option>`).join("");
   const chartBars = renderAnalyticsBars(analytics);
   const changelog = (version.changelog || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const setupRows = (setup.steps || []).map((item) => `<li><strong>${escapeHtml(item.label)}</strong>: ${item.ok ? "ready" : item.optional ? "optional" : "needed"}</li>`).join("");
+  const promptOptions = Object.keys(prompts.templates || {}).sort().map((key) => `<option value="${escapeAttr(key)}" ${prompts.active === key ? "selected" : ""}>${escapeHtml(key)}</option>`).join("");
   els.automationView.innerHTML = `
+    <div class="automation-block">
+      <h3>Setup Wizard</h3>
+      <p>${setup.ready ? "Ready for review workflow." : "Finish required setup before relying on automation."}</p>
+      <ul class="compact-list">${setupRows}</ul>
+      <label>Recording folder <input id="setupRecordingDir" type="text" value="${escapeAttr(settings.recording_dir || "")}" /></label>
+      <div class="row">
+        <button data-action="save-setup">Save Setup</button>
+        <button class="secondary" data-action="refresh-diagnostics">Refresh Checks</button>
+      </div>
+    </div>
     <div class="automation-block">
       <h3>Release</h3>
       <p><strong>${escapeHtml(version.version || "local")}</strong> · ${escapeHtml(version.build || "dev")}</p>
@@ -205,9 +227,28 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
     <div class="automation-block">
       <h3>Plugins</h3>
       <ul class="compact-list">${pluginRows}</ul>
-      <label>Local AI command <input id="localAiCommand" type="text" value="${escapeAttr(localAi.command || "")}" placeholder="python C:\\path\\review_clip.py" /></label>
+      <label>Provider
+        <select id="localAiProvider">
+          ${(localAi.providers || []).map((item) => `<option value="${escapeAttr(item.id)}" ${localAi.provider === item.id ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+        </select>
+      </label>
+      <label>Model <input id="localAiModel" type="text" value="${escapeAttr(localAi.model || "")}" placeholder="llava" /></label>
+      <label>Base URL <input id="localAiBaseUrl" type="text" value="${escapeAttr(localAi.base_url || "")}" placeholder="http://127.0.0.1:11434" /></label>
+      <label>Custom command <input id="localAiCommand" type="text" value="${escapeAttr(localAi.command || "")}" placeholder="python C:\\path\\review_clip.py" /></label>
       <button class="secondary" data-action="save-local-ai">Save Local AI</button>
       <p class="muted">${escapeHtml(localAi.expected_protocol || "")}</p>
+    </div>
+    <div class="automation-block">
+      <h3>Prompt System</h3>
+      <label>Template <select id="promptTemplateSelect">${promptOptions}</select></label>
+      <label>Key <input id="promptKey" type="text" placeholder="duelist-custom" /></label>
+      <label>Name <input id="promptName" type="text" placeholder="My review prompt" /></label>
+      <label>Role <input id="promptRole" type="text" placeholder="duelist" /></label>
+      <label>Prompt <textarea id="promptText" rows="5" placeholder="Use {round}, {timestamp}, {labels}, {notes}"></textarea></label>
+      <div class="row">
+        <button class="secondary" data-action="load-prompt">Load</button>
+        <button data-action="save-prompt">Save Prompt</button>
+      </div>
     </div>
     <div class="automation-block">
       <h3>Diagnostics</h3>
@@ -218,8 +259,14 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
     <div class="automation-block">
       <h3>Benchmark</h3>
       <p>${escapeHtml(evaluation.summary || "")}</p>
-      <p class="muted">Precision proxy ${escapeHtml((evaluation.metrics || {}).precision_proxy ?? "n/a")} · coverage proxy ${escapeHtml((evaluation.metrics || {}).coverage_proxy ?? "n/a")}</p>
+      <p class="muted">Measured precision ${escapeHtml((evaluation.metrics || {}).measured_precision ?? "n/a")} · measured recall ${escapeHtml((evaluation.metrics || {}).measured_recall ?? "n/a")} · proxy ${escapeHtml((evaluation.metrics || {}).precision_proxy ?? "n/a")}</p>
       <button class="secondary" data-action="refresh-evaluation">Run Benchmark</button>
+    </div>
+    <div class="automation-block">
+      <h3>Detector Tuning</h3>
+      <p>${escapeHtml(tuning.summary || "")}</p>
+      <p class="muted">Current ${escapeHtml(tuning.current || "normal")} · recommended ${escapeHtml(tuning.recommended || "normal")}</p>
+      <button class="secondary" data-action="apply-detector-tuning">Apply Tuning</button>
     </div>
     <div class="automation-block">
       <h3>Backups</h3>
@@ -277,9 +324,17 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
       <p class="muted">${escapeHtml((privacy.data_categories || []).join(", "))}</p>
       <div class="row">
         <button class="secondary" data-action="privacy-export">Export Data</button>
+        <button class="secondary" data-action="debug-bundle">Debug Bundle</button>
         <button class="danger" data-action="privacy-wipe-frames">Wipe Frames</button>
         <button class="danger" data-action="privacy-wipe-clips">Wipe Clips</button>
       </div>
+      <p class="muted">${escapeHtml((modelAudit || {}).summary || "")}</p>
+    </div>
+    <div class="automation-block">
+      <h3>Session Report</h3>
+      <p>${escapeHtml(((sessionReport || {}).report || {}).summary || "No session report yet.")}</p>
+      <ul class="compact-list">${((((sessionReport || {}).report || {}).next_drills || []).slice(0, 3).map((item) => `<li>${escapeHtml(item)}</li>`).join(""))}</ul>
+      <button class="secondary" data-action="session-report">Refresh Session Report</button>
     </div>
     <div class="automation-block">
       <h3>Memory</h3>
@@ -300,6 +355,7 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
     </div>
   `;
   window.__coachPlaybooks = playbooks;
+  window.__coachPrompts = prompts.templates || {};
 }
 
 function renderProviderRows(providers) {
@@ -455,9 +511,62 @@ async function applyCorrection(id) {
 }
 
 async function saveLocalAiConfig() {
-  const command = document.querySelector("#localAiCommand").value;
-  await api("/api/local-ai/config", { method: "POST", body: JSON.stringify({ command }) });
-  setStatus(command ? "Local AI command saved." : "Local AI disabled.");
+  const payload = {
+    provider: document.querySelector("#localAiProvider").value,
+    model: document.querySelector("#localAiModel").value,
+    base_url: document.querySelector("#localAiBaseUrl").value,
+    command: document.querySelector("#localAiCommand").value,
+  };
+  await api("/api/local-ai/config", { method: "POST", body: JSON.stringify(payload) });
+  setStatus("Local AI settings saved.");
+  await loadAutomation();
+}
+
+async function saveSetupWizard() {
+  await api("/api/setup", {
+    method: "POST",
+    body: JSON.stringify({
+      recording_dir: document.querySelector("#setupRecordingDir").value,
+      auto_import: document.querySelector("#autoImport")?.value || "false",
+      auto_analysis: document.querySelector("#autoAnalysis")?.value || "false",
+      frame_sample_rate: document.querySelector("#frameSampleRate")?.value || "standard",
+      detector_sensitivity: document.querySelector("#detectorSensitivity")?.value || "normal",
+      local_ai_provider: document.querySelector("#localAiProvider")?.value || "custom-command",
+      local_ai_model: document.querySelector("#localAiModel")?.value || "",
+      local_ai_base_url: document.querySelector("#localAiBaseUrl")?.value || "",
+      local_ai_command: document.querySelector("#localAiCommand")?.value || "",
+    }),
+  });
+  els.recordingDir.value = document.querySelector("#setupRecordingDir").value;
+  setStatus("Setup saved.");
+  await loadAutomation();
+}
+
+function loadPromptEditor() {
+  const key = document.querySelector("#promptTemplateSelect").value;
+  const template = (window.__coachPrompts || {})[key] || {};
+  document.querySelector("#promptKey").value = key;
+  document.querySelector("#promptName").value = template.name || "";
+  document.querySelector("#promptRole").value = template.role || "";
+  document.querySelector("#promptText").value = template.prompt || "";
+}
+
+async function savePromptTemplate() {
+  const payload = {
+    key: document.querySelector("#promptKey").value,
+    name: document.querySelector("#promptName").value,
+    role: document.querySelector("#promptRole").value,
+    prompt: document.querySelector("#promptText").value,
+    active: true,
+  };
+  await api("/api/prompts", { method: "POST", body: JSON.stringify(payload) });
+  setStatus(`Prompt saved: ${payload.key}`);
+  await loadAutomation();
+}
+
+async function applyDetectorTuning() {
+  const payload = await api("/api/detector/tuning/apply", { method: "POST" });
+  setStatus(`Detector sensitivity set to ${payload.tuning.recommended}.`);
   await loadAutomation();
 }
 
@@ -466,9 +575,20 @@ async function privacyExport() {
   setStatus(payload.message || `Privacy export written: ${payload.path}`);
 }
 
+async function debugBundle() {
+  const payload = await api("/api/privacy/debug-bundle", { method: "POST" });
+  setStatus(payload.message || `Debug bundle written: ${payload.path}`);
+}
+
 async function privacyWipe(targets) {
   await api("/api/privacy/wipe", { method: "POST", body: JSON.stringify({ targets }) });
   setStatus(`Privacy wipe complete: ${targets.join(", ")}.`);
+  await loadAutomation();
+}
+
+async function refreshSessionReport() {
+  const payload = await api("/api/sessions/report", { method: "POST", body: JSON.stringify({}) });
+  setStatus((payload.report || {}).summary || "Session report refreshed.");
   await loadAutomation();
 }
 
@@ -815,6 +935,27 @@ async function writeReport(id) {
   setStatus(`Report written: ${payload.path}`);
 }
 
+async function saveMatchMetadata(button) {
+  const card = button.closest(".match-item");
+  const id = button.dataset.id;
+  await api(`/api/matches/${id}/metadata`, {
+    method: "POST",
+    body: JSON.stringify({
+      map: card.querySelector('[data-field="match_map"]').value,
+      agent: card.querySelector('[data-field="match_agent"]').value,
+      status: card.querySelector('[data-field="match_status"]').value,
+    }),
+  });
+  setStatus(`Match #${id} metadata saved.`);
+  await Promise.all([loadMatches(), currentMatchId == id ? loadReport(id) : Promise.resolve()]);
+}
+
+async function saveBenchmarkLabel(payload) {
+  const result = await api("/api/evaluation/labels", { method: "POST", body: JSON.stringify(payload) });
+  setStatus(`Benchmark label saved: ${result.label.label_type}.`);
+  await loadAutomation();
+}
+
 async function loadMatches() {
   const payload = await api("/api/matches");
   els.matchesList.innerHTML = "";
@@ -831,6 +972,13 @@ async function loadMatches() {
         ${escapeHtml(match.map || "unknown map")} · ${escapeHtml(match.agent || "unknown agent")} ·
         ${escapeHtml(match.status)} · ${match.death_count} death(s)
       </div>
+      <details class="metadata-editor">
+        <summary>Edit metadata</summary>
+        <label>Map <input data-field="match_map" type="text" value="${escapeAttr(match.map || "")}" /></label>
+        <label>Agent <input data-field="match_agent" type="text" value="${escapeAttr(match.agent || "")}" /></label>
+        <label>Status <input data-field="match_status" type="text" value="${escapeAttr(match.status || "")}" /></label>
+        <button class="secondary" data-action="save-match-metadata" data-id="${match.id}">Save Metadata</button>
+      </details>
       <div class="match-actions">
         <button data-action="view" data-id="${match.id}">View</button>
         <button data-action="pipeline" data-id="${match.id}">Pipeline</button>
@@ -1056,6 +1204,14 @@ function renderReport(report) {
         <button data-action="add-death" data-id="${match.id}">Add Death</button>
       </div>
     </section>
+    <section>
+      <h3>Benchmark Labeling</h3>
+      <div class="add-death">
+        <label>Missed death sec <input id="benchmarkMissedTs" type="number" min="0" step="0.1" placeholder="120.5" /></label>
+        <label class="wide">Note <input id="benchmarkNote" type="text" placeholder="Why the detector missed this death" /></label>
+        <button class="secondary" data-action="benchmark-missed" data-id="${match.id}">Mark Missed Death</button>
+      </div>
+    </section>
     ${suggestions}
     ${matchAnalyses}
     ${review}
@@ -1154,6 +1310,7 @@ function renderSuggestions(suggestions) {
           <div class="row">
             <button data-action="accept-suggestion" data-id="${item.id}" data-ts="${item.timestamp}">Accept</button>
             <button class="danger" data-action="reject-suggestion" data-id="${item.id}">Reject</button>
+            <button class="secondary" data-action="benchmark-false-positive" data-id="${item.id}" data-match="${currentMatchId}" data-ts="${item.timestamp}">False Positive</button>
             <button class="secondary" data-action="jump" data-ts="${item.timestamp}">Jump</button>
           </div>
         </div>
@@ -1219,6 +1376,7 @@ function renderDeathCard(death) {
         <button class="secondary" data-action="gameplay" data-id="${death.id}">Gameplay</button>
         <button class="secondary" data-action="ai-review" data-id="${death.id}">AI Review</button>
         <button class="secondary" data-action="local-ai-review" data-id="${death.id}">Local AI</button>
+        <button class="secondary" data-action="benchmark-true-positive" data-id="${death.id}" data-match="${death.match_id}" data-ts="${death.timestamp || 0}">True Positive</button>
         ${clip}
       </div>
       <p class="muted">${escapeHtml(death.notes || "")}</p>
@@ -1240,6 +1398,12 @@ function renderDeathCard(death) {
         <label>Mistake start <input data-field="annotation_mistake_start" type="number" min="0" step="0.1" placeholder="clip sec" /></label>
         <label>First contact <input data-field="annotation_first_contact" type="number" min="0" step="0.1" placeholder="clip sec" /></label>
         <label>Death moment <input data-field="annotation_death_moment" type="number" min="0" step="0.1" placeholder="clip sec" /></label>
+        <div class="wide timeline-actions" data-death-ts="${escapeAttr(death.timestamp || 0)}">
+          <button type="button" class="secondary" data-action="set-annotation-time" data-field="annotation_mistake_start">Set Mistake</button>
+          <button type="button" class="secondary" data-action="set-annotation-time" data-field="annotation_first_contact">Set Contact</button>
+          <button type="button" class="secondary" data-action="set-annotation-time" data-field="annotation_death_moment">Set Death</button>
+          <button type="button" class="secondary" data-action="loop-death" data-ts="${death.timestamp || 0}">Loop 12s</button>
+        </div>
         <label class="wide">Better decision <input data-field="annotation_better_decision" type="text" placeholder="What should you have done instead?" /></label>
         <label>Annotation labels <input data-field="annotation_labels" type="text" placeholder="timing, utility, spacing" /></label>
         <label class="wide">Annotation notes <input data-field="annotation_notes" type="text" placeholder="What should the personal coach learn?" /></label>
@@ -1499,6 +1663,31 @@ function jumpTo(ts) {
   player.play().catch(() => {});
 }
 
+function setAnnotationTime(button) {
+  const player = document.querySelector("#vodPlayer");
+  const card = button.closest(".death-card");
+  if (!player || !card) return;
+  const base = Number(button.closest(".timeline-actions")?.dataset.deathTs || 0);
+  const relative = Math.max(0, player.currentTime - Math.max(0, base - 8));
+  const input = card.querySelector(`[data-field="${button.dataset.field}"]`);
+  if (input) input.value = relative.toFixed(1);
+}
+
+function loopDeath(ts) {
+  const player = document.querySelector("#vodPlayer");
+  if (!player) return;
+  const start = Math.max(0, Number(ts) - 8);
+  const end = Math.max(start + 1, Number(ts) + 4);
+  player.currentTime = start;
+  player.play().catch(() => {});
+  const onTime = () => {
+    if (player.currentTime >= end) player.currentTime = start;
+  };
+  player.removeEventListener("timeupdate", window.__deathLoopHandler || (() => {}));
+  window.__deathLoopHandler = onTime;
+  player.addEventListener("timeupdate", onTime);
+}
+
 function renderCalibrationOverlay() {
   const overlay = document.querySelector("#calibrationOverlay");
   if (!overlay) return;
@@ -1611,6 +1800,7 @@ els.automationView.addEventListener("click", (event) => {
   if (!button) return;
   const action = button.dataset.action;
   if (action === "save-automation") saveAutomationSettings().catch((err) => setStatus(err.message));
+  if (action === "save-setup") saveSetupWizard().catch((err) => setStatus(err.message));
   if (action === "start-watcher") startWatcher().catch((err) => setStatus(err.message));
   if (action === "stop-watcher") stopWatcher().catch((err) => setStatus(err.message));
   if (action === "cancel-job") cancelJob(button.dataset.id).catch((err) => setStatus(err.message));
@@ -1625,11 +1815,16 @@ els.automationView.addEventListener("click", (event) => {
   if (action === "delete-playbook") deletePlaybookFromEditor().catch((err) => setStatus(err.message));
   if (action === "apply-correction") applyCorrection(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "save-local-ai") saveLocalAiConfig().catch((err) => setStatus(err.message));
+  if (action === "load-prompt") loadPromptEditor();
+  if (action === "save-prompt") savePromptTemplate().catch((err) => setStatus(err.message));
+  if (action === "apply-detector-tuning") applyDetectorTuning().catch((err) => setStatus(err.message));
   if (action === "refresh-diagnostics") loadAutomation().then(() => setStatus("Diagnostics refreshed.")).catch((err) => setStatus(err.message));
   if (action === "refresh-evaluation") loadAutomation().then(() => setStatus("Benchmark refreshed.")).catch((err) => setStatus(err.message));
   if (action === "privacy-export") privacyExport().catch((err) => setStatus(err.message));
+  if (action === "debug-bundle") debugBundle().catch((err) => setStatus(err.message));
   if (action === "privacy-wipe-frames") privacyWipe(["vision", "deep"]).catch((err) => setStatus(err.message));
   if (action === "privacy-wipe-clips") privacyWipe(["clips"]).catch((err) => setStatus(err.message));
+  if (action === "session-report") refreshSessionReport().catch((err) => setStatus(err.message));
   if (action === "export-memory") exportMemory().catch((err) => setStatus(err.message));
   if (action === "import-memory") importMemory().catch((err) => setStatus(err.message));
   if (action === "export-report-json") exportCurrentReport("json").catch((err) => setStatus(err.message));
@@ -1642,6 +1837,7 @@ els.matchesList.addEventListener("click", (event) => {
   const id = button.dataset.id;
   const action = button.dataset.action;
   if (action === "view") loadReport(id).catch((err) => setStatus(err.message));
+  if (action === "save-match-metadata") saveMatchMetadata(button).catch((err) => setStatus(err.message));
   if (action === "pipeline") startPipeline(id).catch((err) => setStatus(err.message));
   if (action === "batch-deaths") startDeathBatch(id).catch((err) => setStatus(err.message));
   if (action === "analyze") analyzeMatch(id).catch((err) => setStatus(err.message));
@@ -1668,6 +1864,9 @@ els.reportView.addEventListener("click", (event) => {
   if (action === "preset-label") applyPreset(button);
   if (action === "accept-suggestion") acceptSuggestion(button).catch((err) => setStatus(err.message));
   if (action === "reject-suggestion") rejectSuggestion(button.dataset.id).catch((err) => setStatus(err.message));
+  if (action === "benchmark-false-positive") saveBenchmarkLabel({ match_id: button.dataset.match, suggestion_id: button.dataset.id, timestamp: button.dataset.ts, label_type: "false_positive", note: "Marked from suggestion card" }).catch((err) => setStatus(err.message));
+  if (action === "benchmark-true-positive") saveBenchmarkLabel({ match_id: button.dataset.match, death_id: button.dataset.id, timestamp: button.dataset.ts, label_type: "true_positive", note: "Marked from death card" }).catch((err) => setStatus(err.message));
+  if (action === "benchmark-missed") saveBenchmarkLabel({ match_id: button.dataset.id, timestamp: document.querySelector("#benchmarkMissedTs").value, label_type: "missed_death", note: document.querySelector("#benchmarkNote").value }).catch((err) => setStatus(err.message));
   if (action === "add-death") addDeath(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "advice") getAdvice(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "vision") analyzeDeathVision(button.dataset.id).catch((err) => setStatus(err.message));
@@ -1680,6 +1879,8 @@ els.reportView.addEventListener("click", (event) => {
   if (action === "save-death") saveDeath(button).catch((err) => setStatus(err.message));
   if (action === "save-correction") saveDeathCorrection(button).catch((err) => setStatus(err.message));
   if (action === "save-annotation") saveClipAnnotation(button).catch((err) => setStatus(err.message));
+  if (action === "set-annotation-time") setAnnotationTime(button);
+  if (action === "loop-death") loopDeath(button.dataset.ts);
   if (action === "delete-death") deleteDeath(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "toggle-calibration-overlay") toggleCalibrationOverlay();
   if (action === "save-overlay-calibration") saveCalibration().catch((err) => setStatus(err.message));

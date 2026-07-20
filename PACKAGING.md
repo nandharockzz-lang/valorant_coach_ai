@@ -107,3 +107,17 @@ powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1 -OneFile
 ```
 
 For single-file mode, place optional tools next to the generated `.exe` or put them on PATH.
+
+## Installer ZIP
+
+Create a portable Windows release zip with a desktop shortcut installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1
+```
+
+Output:
+
+```text
+dist\valorant-coach-agent-windows.zip
+```

@@ -77,18 +77,31 @@ Automation features:
 - **Automation** panel controls auto-import, auto-analysis, detector sensitivity, frame sample rate, storage cleanup, analytics, persistent job status, logs, tools, backups, search, exports, and memory export/import.
 - The Automation panel also includes app version/schema status, provider registry, privacy audit, advanced death search, editable local playbooks, and a correction review queue.
 - It now also includes local plugin status, installer diagnostics, detector benchmark metrics, local-AI command configuration, privacy export, and privacy wipe controls.
+- Setup Wizard checks recording folder, writable app folders, ffmpeg, Tesseract, and local model provider readiness.
+- Local AI supports custom command, Ollama, LM Studio, and llama.cpp-style local HTTP providers.
+- Prompt templates are editable for role/map/agent-specific model review criteria.
+- Detector Tuning recommends sensitivity from accepted/rejected suggestions plus benchmark labels.
+- Session Report summarizes top mistakes, improvement signal, and next drills for a play block.
 - **Queue** creates a prioritized review list for the match.
 - **Smart Queue** groups review items into coaching clusters and identifies the highest-value review themes.
 - **Story** reconstructs a local per-round narrative from rounds, deaths, labels, and saved analyses.
 - Manual correction fields on death cards store corrected phase/OCR/event/keyframe notes locally.
 - Death cards include clip annotation fields for mistake start, first contact, death moment, better decision, labels, and notes.
 - Optional **Local AI** review can run a user-configured local command. The core app sends JSON to that local process over stdin and does not upload clips or frames.
+- Benchmark labels can mark true positives, false positives, and missed deaths to measure precision/recall and tune the detector.
+- Match cards include metadata quick edit for map, agent, and status.
 - Persistent jobs survive app restart; interrupted queued/running jobs are marked failed on the next launch.
 - The watcher waits for recording file size to stabilize before import.
 - Reports can be exported as Markdown, JSON, or HTML.
 - `launch_desktop.bat` runs a tray shell with crash recovery. If the local server exits or fails repeated health checks, it restarts automatically and writes recovery notes to `logs/desktop-shell.log`.
 
 Personal Coach v2 adds weighted pattern memory, skill ratings, a weekly focus plan, and memory-strength tracking. It learns from death labels, clip annotations, accepted/rejected advice, detector feedback, and saved local visual analyses.
+
+Build a portable Windows installer zip:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1
+```
 
 ## Optional Sidecar Analysis
 

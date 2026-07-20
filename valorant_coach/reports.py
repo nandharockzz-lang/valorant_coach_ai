@@ -26,6 +26,8 @@ def build_report(db: Database, match_id: int) -> Dict[str, Any]:
             "review_queue_v2",
             "round_story_v2",
             "evaluation_benchmark",
+            "detector_tuning",
+            "session_report",
         )
     }
     for death in deaths:

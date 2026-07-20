@@ -1,5 +1,6 @@
 import json
 import csv
+import base64
 import platform
 import shutil
 import subprocess
@@ -8,6 +9,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from urllib import request as urlrequest
+from urllib.error import URLError
 
 from .advice import generate_advice
 from .analyzer import analyze_match, import_video, scan_recording_folder
@@ -523,7 +526,12 @@ def provider_registry() -> Dict[str, Any]:
         "frame_extractors": [{"id": "ffmpeg", "status": "available-if-installed", "privacy": "local"}],
         "playbooks": [{"id": "local-json", "status": "enabled", "privacy": "local"}],
         "analytics": [{"id": "sqlite-local", "status": "enabled", "privacy": "local"}],
-        "ai_review": [{"id": "none", "status": "disabled", "privacy": "no upload"}],
+        "ai_review": [
+            {"id": "custom-command", "status": "configured-by-user", "privacy": "local process"},
+            {"id": "ollama", "status": "configured-by-user", "privacy": "local HTTP"},
+            {"id": "lmstudio", "status": "configured-by-user", "privacy": "local HTTP"},
+            {"id": "llamacpp", "status": "configured-by-user", "privacy": "local HTTP"},
+        ],
     }
 
 
@@ -700,9 +708,15 @@ def evaluation_benchmark(db: Database) -> Dict[str, Any]:
     labeled = accepted + rejected
     precision = round(accepted / labeled, 3) if labeled else None
     coverage = round(accepted / total_deaths, 3) if total_deaths else None
+    manual_counts = benchmark_labels(db)["counts"]
+    true_positive = manual_counts.get("true_positive", 0)
+    false_positive = manual_counts.get("false_positive", 0)
+    missed = manual_counts.get("missed_death", 0) + manual_counts.get("false_negative", 0)
+    measured_precision = round(true_positive / (true_positive + false_positive), 3) if true_positive + false_positive else None
+    measured_recall = round(true_positive / (true_positive + missed), 3) if true_positive + missed else None
     result = {
         "kind": "evaluation_benchmark",
-        "summary": benchmark_summary(precision, coverage, total_deaths, total_suggestions),
+        "summary": benchmark_summary(measured_precision if measured_precision is not None else precision, coverage, total_deaths, total_suggestions),
         "metrics": {
             "matches": len(matches),
             "labeled_matches": labeled_matches,
@@ -713,6 +727,9 @@ def evaluation_benchmark(db: Database) -> Dict[str, Any]:
             "pending": pending,
             "precision_proxy": precision,
             "coverage_proxy": coverage,
+            "measured_precision": measured_precision,
+            "measured_recall": measured_recall,
+            "benchmark_labels": manual_counts,
         },
         "per_match": per_match[:50],
         "notes": [
@@ -930,21 +947,39 @@ def round_story_summary(events: List[Dict[str, Any]]) -> str:
 
 
 def local_ai_status(db: Database) -> Dict[str, Any]:
+    provider = str(db.get_setting("local_ai_provider", "custom-command") or "custom-command")
     command = str(db.get_setting("local_ai_command", "") or "").strip()
-    enabled = bool(command)
+    base_url = str(db.get_setting("local_ai_base_url", default_base_url(provider)) or "").strip()
+    model = str(db.get_setting("local_ai_model", default_model(provider)) or "").strip()
+    enabled = bool(command) if provider == "custom-command" else bool(base_url and model)
     return {
         "enabled": enabled,
         "privacy": "local process only; no network upload by this app",
+        "provider": provider,
         "command": command,
+        "base_url": base_url,
+        "model": model,
         "status": "configured" if enabled else "disabled",
-        "expected_protocol": "stdin JSON, stdout JSON with summary, labels, better_play, confidence",
+        "expected_protocol": "custom command uses stdin JSON/stdout JSON; HTTP providers use local-only JSON requests",
+        "providers": [
+            {"id": "custom-command", "label": "Custom command"},
+            {"id": "ollama", "label": "Ollama"},
+            {"id": "lmstudio", "label": "LM Studio"},
+            {"id": "llamacpp", "label": "llama.cpp server"},
+        ],
     }
 
 
 def save_local_ai_config(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
+    provider = str(payload.get("provider") or "custom-command").strip()
     command = str(payload.get("command") or "").strip()
+    base_url = str(payload.get("base_url") or default_base_url(provider)).strip()
+    model = str(payload.get("model") or default_model(provider)).strip()
+    db.set_setting("local_ai_provider", provider)
     db.set_setting("local_ai_command", command)
-    db.log("info", "local-ai", "Updated local AI command configuration", {"configured": bool(command)})
+    db.set_setting("local_ai_base_url", base_url)
+    db.set_setting("local_ai_model", model)
+    db.log("info", "local-ai", "Updated local AI configuration", {"provider": provider, "configured": bool(command or base_url)})
     return {"ok": True, "local_ai": local_ai_status(db)}
 
 
@@ -968,8 +1003,13 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
         "death": death,
         "annotations": death.get("annotations") or [],
         "clip_path": death.get("clip_path"),
+        "keyframes": keyframe_payload(db, death_id),
+        "prompt": render_model_prompt(db, death),
         "privacy": "local-only",
     }
+    db.save_death_analysis(death_id, "local_model_audit", redact_model_request(request, status))
+    if status["provider"] != "custom-command":
+        return run_local_http_review(db, death_id, request, status)
     try:
         completed = subprocess.run(
             status["command"],
@@ -998,6 +1038,119 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
     }
     db.save_death_analysis(death_id, "local_ai_review", result)
     return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
+
+
+def default_base_url(provider: str) -> str:
+    return {
+        "ollama": "http://127.0.0.1:11434",
+        "lmstudio": "http://127.0.0.1:1234/v1",
+        "llamacpp": "http://127.0.0.1:8080",
+    }.get(provider, "")
+
+
+def default_model(provider: str) -> str:
+    return {
+        "ollama": "llava",
+        "lmstudio": "local-model",
+        "llamacpp": "local-model",
+    }.get(provider, "")
+
+
+def keyframe_payload(db: Database, death_id: int) -> List[Dict[str, Any]]:
+    latest = db.get_latest_structured_analysis("death", death_id, "keyframes")
+    frames = ((latest or {}).get("payload") or {}).get("frames") or []
+    encoded = []
+    for item in frames[:4]:
+        frame_id = str(item.get("frame_id") or "")
+        path = find_frame_path(db.path.parent, frame_id)
+        payload = {key: item.get(key) for key in ("role", "timestamp", "reason")}
+        payload["frame_id"] = frame_id
+        if path and path.exists():
+            payload["image_base64"] = base64.b64encode(path.read_bytes()).decode("ascii")
+        encoded.append(payload)
+    return encoded
+
+
+def find_frame_path(data_dir: Path, frame_id: str) -> Optional[Path]:
+    for root in (data_dir / "vision", data_dir / "deep"):
+        matches = list(root.glob(f"**/{frame_id}.jpg"))
+        if matches:
+            return matches[0]
+    return None
+
+
+def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
+    templates = prompt_templates(db)["templates"]
+    key = str(db.get_setting("active_prompt_template", "default") or "default")
+    template = templates.get(key) or templates["default"]
+    labels = ", ".join(death.get("mistake_labels") or [])
+    return template["prompt"].format(
+        round=death.get("round_number") or "?",
+        timestamp=death.get("timestamp") or "?",
+        labels=labels or "unlabeled",
+        notes=death.get("notes") or "",
+    )
+
+
+def run_local_http_review(db: Database, death_id: int, payload: Dict[str, Any], status: Dict[str, Any]) -> Dict[str, Any]:
+    provider = status["provider"]
+    images = [item["image_base64"] for item in payload.get("keyframes") or [] if item.get("image_base64")]
+    prompt = payload["prompt"]
+    if provider == "ollama":
+        endpoint = status["base_url"].rstrip("/") + "/api/generate"
+        body = {"model": status["model"], "prompt": prompt, "stream": False}
+        if images:
+            body["images"] = images
+    else:
+        endpoint = status["base_url"].rstrip("/") + "/chat/completions"
+        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content.extend({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}} for image in images)
+        body = {"model": status["model"], "messages": [{"role": "user", "content": content}], "temperature": 0.2}
+    try:
+        response = post_json(endpoint, body, timeout=120)
+    except Exception as exc:
+        return {"ok": False, "message": f"{provider} request failed: {exc}", "status": status}
+    text = response.get("response") or (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or json.dumps(response)
+    result = parse_model_review(text, provider)
+    db.save_death_analysis(death_id, "local_ai_review", result)
+    return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
+
+
+def post_json(url: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
+    data = json.dumps(body).encode("utf-8")
+    req = urlrequest.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    with urlrequest.urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8") or "{}")
+
+
+def parse_model_review(text: str, provider: str) -> Dict[str, Any]:
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = {"summary": text}
+    return {
+        "kind": "local_ai_review",
+        "summary": str(parsed.get("summary") or parsed.get("what_happened") or text[:500]),
+        "labels": normalize_text_list(parsed.get("labels") or parsed.get("suggested_labels") or []),
+        "better_play": str(parsed.get("better_play") or parsed.get("recommendation") or ""),
+        "confidence": float(parsed.get("confidence") or 0.55),
+        "status": "completed",
+        "provider": provider,
+    }
+
+
+def redact_model_request(payload: Dict[str, Any], status: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "kind": "local_model_audit",
+        "provider": status.get("provider"),
+        "model": status.get("model"),
+        "base_url": status.get("base_url"),
+        "sent_clip_path": bool(payload.get("clip_path")),
+        "sent_keyframes": len(payload.get("keyframes") or []),
+        "sent_image_bytes": sum(len(item.get("image_base64") or "") for item in payload.get("keyframes") or []),
+        "prompt_preview": str(payload.get("prompt") or "")[:600],
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
 
 def installer_diagnostics(paths: Dict[str, Path], db: Database) -> Dict[str, Any]:
@@ -1136,6 +1289,242 @@ def plugin_registry(db: Database) -> Dict[str, Any]:
             },
         ]
     }
+
+
+def setup_wizard_status(paths: Dict[str, Path], db: Database) -> Dict[str, Any]:
+    diagnostics = installer_diagnostics(paths, db)
+    settings = {
+        "recording_dir": db.get_setting("recording_dir", ""),
+        "auto_import": db.get_setting("auto_import", "false"),
+        "auto_analysis": db.get_setting("auto_analysis", "false"),
+        "frame_sample_rate": db.get_setting("frame_sample_rate", "standard"),
+        "detector_sensitivity": db.get_setting("detector_sensitivity", "normal"),
+    }
+    ready = bool(settings["recording_dir"]) and diagnostics.get("ok", False)
+    steps = [
+        {"id": "recording_dir", "label": "Recording folder", "ok": bool(settings["recording_dir"])},
+        {"id": "ffmpeg", "label": "ffmpeg for clips/frame analysis", "ok": bool(ffmpeg_path()), "optional": True},
+        {"id": "tesseract", "label": "Tesseract for OCR", "ok": bool(tesseract_path()), "optional": True},
+        {"id": "local_ai", "label": "Local model provider", "ok": local_ai_status(db)["enabled"], "optional": True},
+        {"id": "directories", "label": "Writable app folders", "ok": diagnostics.get("ok", False)},
+    ]
+    return {"ready": ready, "settings": settings, "steps": steps, "diagnostics": diagnostics, "local_ai": local_ai_status(db)}
+
+
+def save_setup_wizard(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
+    for key in ("recording_dir", "auto_import", "auto_analysis", "frame_sample_rate", "detector_sensitivity"):
+        if key in payload:
+            db.set_setting(key, str(payload.get(key) or ""))
+    if any(key in payload for key in ("local_ai_provider", "local_ai_command", "local_ai_base_url", "local_ai_model")):
+        save_local_ai_config(
+            db,
+            {
+                "provider": payload.get("local_ai_provider"),
+                "command": payload.get("local_ai_command"),
+                "base_url": payload.get("local_ai_base_url"),
+                "model": payload.get("local_ai_model"),
+            },
+        )
+    db.set_setting("setup_completed", "true")
+    return {"ok": True}
+
+
+def prompt_templates(db: Database) -> Dict[str, Any]:
+    raw = db.get_setting("prompt_templates", "")
+    if raw:
+        try:
+            templates = json.loads(raw)
+        except json.JSONDecodeError:
+            templates = {}
+    else:
+        templates = {}
+    defaults = {
+        "default": {
+            "name": "Default death review",
+            "role": "all",
+            "prompt": (
+                "Review this VALORANT death locally. Return JSON with summary, labels, better_play, confidence. "
+                "Round: {round}. Timestamp: {timestamp}. Labels: {labels}. Notes: {notes}. "
+                "Focus on positioning, utility, crosshair placement, minimap/timing, and the better next decision."
+            ),
+        },
+        "duelist": {
+            "name": "Duelist entry review",
+            "role": "duelist",
+            "prompt": (
+                "Review this VALORANT duelist death. Return JSON with summary, labels, better_play, confidence. "
+                "Round {round}, timestamp {timestamp}, labels {labels}, notes {notes}. "
+                "Judge entry timing, trade path, escape plan, and whether utility or teammate contact enabled the fight."
+            ),
+        },
+        "controller": {
+            "name": "Controller timing review",
+            "role": "controller",
+            "prompt": (
+                "Review this VALORANT controller death. Return JSON with summary, labels, better_play, confidence. "
+                "Round {round}, timestamp {timestamp}, labels {labels}, notes {notes}. "
+                "Judge smoke timing, map control, rotate timing, and whether the death happened through unsupported space."
+            ),
+        },
+    }
+    defaults.update(templates)
+    return {"templates": defaults, "active": db.get_setting("active_prompt_template", "default")}
+
+
+def save_prompt_template(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
+    key = str(payload.get("key") or "").strip()
+    if not key:
+        return {"ok": False, "message": "template key is required"}
+    templates = prompt_templates(db)["templates"]
+    templates[key] = {
+        "name": str(payload.get("name") or key),
+        "role": str(payload.get("role") or "all"),
+        "prompt": str(payload.get("prompt") or ""),
+    }
+    custom = {item_key: value for item_key, value in templates.items() if item_key not in {"default", "duelist", "controller"}}
+    db.set_setting("prompt_templates", json.dumps(custom))
+    if payload.get("active"):
+        db.set_setting("active_prompt_template", key)
+    return {"ok": True, "templates": prompt_templates(db)}
+
+
+def update_match_metadata(db: Database, match_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    allowed = {}
+    for key in ("map", "agent", "status", "duration", "started_at"):
+        if key in payload:
+            allowed[key] = payload.get(key)
+    if not allowed:
+        return {"ok": False, "message": "no metadata fields supplied"}
+    db.update_match(match_id, **allowed)
+    db.log("info", "metadata", f"Updated match #{match_id} metadata", allowed)
+    return {"ok": True, "match": db.get_match(match_id)}
+
+
+def save_benchmark_label(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
+    label = {
+        "kind": "benchmark_label",
+        "label_type": str(payload.get("label_type") or "").strip(),
+        "match_id": int(payload.get("match_id") or 0),
+        "death_id": int(payload.get("death_id") or 0) if payload.get("death_id") else None,
+        "suggestion_id": int(payload.get("suggestion_id") or 0) if payload.get("suggestion_id") else None,
+        "timestamp": optional_float(payload.get("timestamp")),
+        "note": str(payload.get("note") or "").strip(),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if not label["match_id"] or label["label_type"] not in {"true_positive", "false_positive", "missed_death", "false_negative"}:
+        return {"ok": False, "message": "match_id and valid label_type are required"}
+    analysis_id = db.save_structured_analysis(label["match_id"], "benchmark_label", label)
+    return {"ok": True, "id": analysis_id, "label": label, "evaluation": evaluation_benchmark(db)}
+
+
+def benchmark_labels(db: Database) -> Dict[str, Any]:
+    labels = [item for item in db.list_structured_analyses("match", limit=500) if item.get("analysis_type") == "benchmark_label"]
+    counts: Dict[str, int] = {}
+    for item in labels:
+        kind = str((item.get("payload") or {}).get("label_type") or "unknown")
+        counts[kind] = counts.get(kind, 0) + 1
+    return {"labels": labels, "count": len(labels), "counts": counts}
+
+
+def detector_tuning(db: Database) -> Dict[str, Any]:
+    feedback = db.detector_feedback_summary()
+    labels = benchmark_labels(db)["counts"]
+    current = db.get_setting("detector_sensitivity", "normal")
+    score = 0
+    score += int(feedback.get("rejected") or 0) * -1
+    score += int(feedback.get("accepted") or 0)
+    score += labels.get("false_positive", 0) * -2
+    score += labels.get("missed_death", 0) * 2
+    if score <= -2:
+        recommended = "low"
+    elif score >= 2:
+        recommended = "high"
+    else:
+        recommended = "normal"
+    result = {
+        "current": current,
+        "recommended": recommended,
+        "score": score,
+        "feedback": feedback,
+        "benchmark_counts": labels,
+        "summary": f"Detector tuning recommends {recommended} sensitivity from feedback and benchmark labels.",
+    }
+    db.save_structured_analysis(0, "detector_tuning", result)
+    return result
+
+
+def apply_detector_tuning(db: Database) -> Dict[str, Any]:
+    tuning = detector_tuning(db)
+    db.set_setting("detector_sensitivity", tuning["recommended"])
+    return {"ok": True, "tuning": tuning}
+
+
+def session_report(db: Database, session_id: Optional[int] = None) -> Dict[str, Any]:
+    sessions = db.get_session_summary()
+    target_session = None
+    if session_id:
+        target_session = next((item for item in sessions.get("recent", []) if int(item["id"]) == session_id), None)
+    target_session = target_session or sessions.get("active") or (sessions.get("recent") or [{}])[0]
+    trends = db.build_trends()
+    coach = coach_dashboard_v2(db)
+    top_labels = list((trends.get("labels") or {}).items())[:3]
+    result = {
+        "kind": "session_report",
+        "session": target_session,
+        "summary": f"Session focus: {(target_session or {}).get('focus_label') or 'none'}. Top issue: {top_labels[0][0] if top_labels else 'not enough data'}.",
+        "top_mistakes": [{"label": label, "count": count} for label, count in top_labels],
+        "best_improvement": infer_best_improvement(trends),
+        "next_drills": ((coach.get("coach_v2") or {}).get("weekly_focus") or {}).get("drills") or [],
+        "coach_v2": coach.get("coach_v2") or {},
+    }
+    db.save_structured_analysis(0, "session_report", result)
+    return {"ok": True, "report": result}
+
+
+def infer_best_improvement(trends: Dict[str, Any]) -> str:
+    recent = trends.get("matches") or []
+    if len(recent) < 2:
+        return "Need at least two reviewed matches to infer improvement."
+    latest = recent[0].get("death_count") or 0
+    previous = recent[1].get("death_count") or 0
+    if latest < previous:
+        return f"Death count dropped from {previous} to {latest} in the latest reviewed match."
+    return "No clear numeric improvement yet; keep annotating deaths and accepting/rejecting advice."
+
+
+def model_audit(db: Database) -> Dict[str, Any]:
+    audits = [
+        item for item in db.list_structured_analyses("death", limit=500)
+        if item.get("analysis_type") in {"local_model_audit", "local_ai_review"}
+    ]
+    return {
+        "local_ai": local_ai_status(db),
+        "records": audits,
+        "count": len(audits),
+        "summary": f"{len(audits)} local model audit/review record(s). Core app does not upload to cloud providers.",
+    }
+
+
+def redacted_debug_bundle(paths: Dict[str, Path], db: Database) -> Dict[str, Any]:
+    export_dir = paths["data"] / "debug_bundles"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    target = export_dir / f"debug-bundle-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    payload = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "version": app_version(db),
+        "diagnostics": installer_diagnostics(paths, db),
+        "privacy_inventory": privacy_inventory(paths, db),
+        "model_audit": model_audit(db),
+        "logs": db.list_logs(200),
+        "settings": {
+            "auto_import": db.get_setting("auto_import", "false"),
+            "auto_analysis": db.get_setting("auto_analysis", "false"),
+            "detector_sensitivity": db.get_setting("detector_sensitivity", "normal"),
+            "frame_sample_rate": db.get_setting("frame_sample_rate", "standard"),
+        },
+    }
+    target.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return {"ok": True, "path": str(target), "message": "Redacted debug bundle written locally."}
 
 
 def optional_float(value: Any) -> Optional[float]:

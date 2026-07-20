@@ -534,6 +534,8 @@ class Database:
         item["gameplay"] = self.get_latest_structured_analysis("death", death_id, "gameplay")
         item["understanding"] = self.get_latest_structured_analysis("death", death_id, "clip_understanding")
         item["keyframes"] = self.get_latest_structured_analysis("death", death_id, "keyframes")
+        item["local_ai_review"] = self.get_latest_structured_analysis("death", death_id, "local_ai_review")
+        item["annotations"] = self.list_subject_analyses("death", death_id, "clip_annotation", limit=20)
         return item
 
     def get_latest_advice(self, death_id: int) -> Optional[Dict[str, Any]]:

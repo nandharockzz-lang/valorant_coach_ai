@@ -17,10 +17,13 @@ from .automation import (
     analytics_dashboard,
     app_version,
     apply_correction,
+    apply_detector_tuning,
     apply_retention,
     backup_database,
+    benchmark_labels,
     cleanup_storage,
     delete_playbook,
+    detector_tuning,
     evaluation_benchmark,
     export_memory,
     export_report,
@@ -31,28 +34,37 @@ from .automation import (
     list_annotations,
     list_corrections,
     local_ai_status,
+    model_audit,
     playbooks,
     plugin_registry,
+    prompt_templates,
     privacy_audit,
     privacy_export,
     privacy_inventory,
     privacy_wipe,
     provider_registry,
+    redacted_debug_bundle,
     restore_database,
     run_death_batch,
     run_local_ai_review,
     run_match_pipeline,
+    save_benchmark_label,
     save_clip_annotation,
     save_local_ai_config,
     save_manual_correction,
     save_playbook,
+    save_prompt_template,
+    save_setup_wizard,
     scan_and_maybe_analyze,
     search_deaths,
+    session_report,
+    setup_wizard_status,
     smart_review_queue_v2,
     storage_stats,
     tool_status,
     coach_dashboard_v2,
     reconstruct_round_story,
+    update_match_metadata,
 )
 from .clipper import extract_death_clips, ffmpeg_path
 from .coach import build_coach_dashboard, build_match_review
@@ -116,10 +128,18 @@ class CoachHandler(BaseHTTPRequestHandler):
             self.json_response(plugin_registry(DB))
         elif parsed.path == "/api/local-ai":
             self.json_response(local_ai_status(DB))
+        elif parsed.path == "/api/setup":
+            self.json_response(setup_wizard_status(PATHS, DB))
+        elif parsed.path == "/api/prompts":
+            self.json_response(prompt_templates(DB))
         elif parsed.path == "/api/diagnostics":
             self.json_response(installer_diagnostics(PATHS, DB))
         elif parsed.path == "/api/evaluation":
             self.json_response(evaluation_benchmark(DB))
+        elif parsed.path == "/api/evaluation/labels":
+            self.json_response(benchmark_labels(DB))
+        elif parsed.path == "/api/detector/tuning":
+            self.json_response(detector_tuning(DB))
         elif parsed.path == "/api/capabilities":
             ffmpeg = ffmpeg_path()
             tesseract = tesseract_path()
@@ -154,6 +174,8 @@ class CoachHandler(BaseHTTPRequestHandler):
             self.json_response(privacy_audit(PATHS, DB))
         elif parsed.path == "/api/privacy/inventory":
             self.json_response(privacy_inventory(PATHS, DB))
+        elif parsed.path == "/api/privacy/model-audit":
+            self.json_response(model_audit(DB))
         elif parsed.path == "/api/corrections":
             self.json_response(list_corrections(DB))
         elif parsed.path == "/api/annotations":
@@ -174,6 +196,8 @@ class CoachHandler(BaseHTTPRequestHandler):
             self.json_response(build_coach_dashboard(DB))
         elif parsed.path == "/api/coach/v2":
             self.json_response(coach_dashboard_v2(DB))
+        elif parsed.path == "/api/sessions/report":
+            self.json_response(session_report(DB))
         elif parsed.path.startswith("/api/deaths/") and parsed.path.endswith("/clip"):
             self.handle_death_clip_get(parsed.path)
         elif parsed.path.startswith("/api/vision/frame/"):
@@ -223,12 +247,22 @@ class CoachHandler(BaseHTTPRequestHandler):
                 self.json_response({"ok": True, "watcher": WATCHER.status()})
             elif parsed.path == "/api/memory/import":
                 self.json_response(import_memory(DB, self.read_json()))
+            elif parsed.path == "/api/setup":
+                self.json_response(save_setup_wizard(DB, self.read_json()))
             elif parsed.path == "/api/local-ai/config":
                 self.json_response(save_local_ai_config(DB, self.read_json()))
+            elif parsed.path == "/api/prompts":
+                self.json_response(save_prompt_template(DB, self.read_json()))
+            elif parsed.path == "/api/evaluation/labels":
+                self.json_response(save_benchmark_label(DB, self.read_json()))
+            elif parsed.path == "/api/detector/tuning/apply":
+                self.json_response(apply_detector_tuning(DB))
             elif parsed.path == "/api/privacy/export":
                 self.json_response(privacy_export(PATHS, DB))
             elif parsed.path == "/api/privacy/wipe":
                 self.json_response(privacy_wipe(PATHS, DB, self.read_json()))
+            elif parsed.path == "/api/privacy/debug-bundle":
+                self.json_response(redacted_debug_bundle(PATHS, DB))
             elif parsed.path == "/api/storage/cleanup":
                 payload = self.read_json()
                 targets = payload.get("targets") or []
@@ -256,6 +290,10 @@ class CoachHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/stats/import":
                 payload = self.read_json()
                 self.json_response(import_stats(DB, Path(str(payload.get("path") or ""))))
+            elif parsed.path == "/api/sessions/report":
+                payload = self.read_json()
+                session_id = int(payload.get("session_id") or 0) or None
+                self.json_response(session_report(DB, session_id))
             elif parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/cancel"):
                 job_id = int(parsed.path.split("/")[3])
                 JOBS.cancel(job_id)
@@ -323,6 +361,9 @@ class CoachHandler(BaseHTTPRequestHandler):
                     self.not_found()
                     return
                 self.json_response(playbooks(DB, match))
+            elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/metadata"):
+                match_id = int(parsed.path.split("/")[3])
+                self.json_response(update_match_metadata(DB, match_id, self.read_json()))
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/hud"):
                 match_id = int(parsed.path.split("/")[3])
                 self.json_response(analyze_hud(DB, match_id, DEEP_DIR))

@@ -97,6 +97,11 @@ Use the **Automation** panel to configure:
 - editable map/agent playbooks
 - correction review and apply queue
 - optional local-AI command configuration
+- Ollama, LM Studio, and llama.cpp local model provider settings
+- editable local model prompt templates
+- detector tuning from benchmark labels
+- session reports
+- match metadata quick edit
 
 Use **Pipeline** on a match to queue the full background analysis flow. Use **Batch Deaths** to run keyframes and clip understanding for all marked deaths.
 
@@ -254,6 +259,18 @@ Configure the command in the Automation panel. The app sends JSON on stdin and e
 ```
 
 The core app does not upload clips or frames. Any network behavior would come from the command you configure, so use a truly local model runner if you want local-only review.
+
+For Ollama, use provider `ollama`, base URL `http://127.0.0.1:11434`, and a vision-capable model name. For LM Studio, use provider `lmstudio`, base URL `http://127.0.0.1:1234/v1`, and the loaded model name.
+
+## Benchmark Labels
+
+Use benchmark labels to measure detector quality:
+
+- **True Positive** on a death card when the detected/marked death is correct.
+- **False Positive** on a suggestion when the detector proposed a bad event.
+- **Missed Death** in the match report when a real death was not detected.
+
+The Automation panel shows measured precision/recall when enough labels exist and can apply detector sensitivity tuning.
 
 ## Backup And Restore
 
