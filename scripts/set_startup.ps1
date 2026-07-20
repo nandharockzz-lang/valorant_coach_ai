@@ -1,4 +1,5 @@
 param(
+    [string]$Launcher = "launch_app.bat",
     [switch]$Disable
 )
 
@@ -15,7 +16,7 @@ if ($Disable) {
     exit 0
 }
 
-$target = Join-Path $root "launch_desktop.bat"
+$target = Join-Path $root $Launcher
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $target

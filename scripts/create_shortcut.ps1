@@ -1,11 +1,12 @@
 param(
     [string]$ShortcutName = "VALORANT Coach Agent",
+    [string]$Launcher = "launch_app.bat",
     [switch]$StartMenu
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$target = Join-Path $root "launch_desktop.bat"
+$target = Join-Path $root $Launcher
 $shell = New-Object -ComObject WScript.Shell
 $folder = if ($StartMenu) {
     [Environment]::GetFolderPath("Programs")

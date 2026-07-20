@@ -1,6 +1,6 @@
 # VALORANT Coach Agent
 
-Local-first post-match coaching agent for VALORANT VODs.
+Local-first post-match coaching agent for VALORANT VODs. It can run in a browser or in a Windows app-window shell.
 
 This MVP avoids game hooks, memory reads, packet inspection, input automation, and live tactical advice. It imports completed recordings, stores match metadata in SQLite, streams VODs in the browser, tracks death markers, generates reports, and supports sidecar event files for repeatable death/positioning analysis.
 
@@ -68,7 +68,9 @@ Advanced local analysis buttons:
 
 Accepted/rejected death suggestions are stored as detector feedback. The detector uses that history to adjust its local threshold for your recordings.
 
-Use `launch_desktop.bat` for a Windows tray shell with quick actions for opening the dashboard, data, clips, reports, restarting the server, and quitting.
+Use `launch_app.bat` for the Windows app-window shell. It starts the local backend, opens the dashboard in a standalone Edge app window, adds a tray menu, and restarts the backend if health checks fail. This is an app-window shell around the local web UI, not a compiled native WebView2 binary yet.
+
+Use `launch_desktop.bat` for the tray shell that opens the dashboard in your normal browser. Use `launch.bat` for plain browser/server mode.
 
 Automation features:
 
@@ -94,6 +96,7 @@ Automation features:
 - The watcher waits for recording file size to stabilize before import.
 - Reports can be exported as Markdown, JSON, or HTML.
 - `launch_desktop.bat` runs a tray shell with crash recovery. If the local server exits or fails repeated health checks, it restarts automatically and writes recovery notes to `logs/desktop-shell.log`.
+- `launch_app.bat` runs the app-window shell with crash recovery and writes recovery notes to `logs/windows-app-shell.log`.
 
 Personal Coach v2 adds weighted pattern memory, skill ratings, a weekly focus plan, and memory-strength tracking. It learns from death labels, clip annotations, accepted/rejected advice, detector feedback, and saved local visual analyses.
 

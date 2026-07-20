@@ -2,6 +2,8 @@
 
 The app can be shipped either as a portable Python folder or as a PyInstaller executable app folder.
 
+The default Windows launcher is `launch_app.bat`. It starts the local Python backend, opens the UI in a standalone Microsoft Edge app window, and provides a tray menu for common actions. This is an app-window shell around the local web UI, not a compiled WebView2 native binary yet.
+
 ## Portable Package
 
 ```powershell
@@ -14,16 +16,24 @@ The output folder is `dist`.
 Run:
 
 ```text
+dist\launch_app.bat
+```
+
+Plain browser/server mode:
+
+```text
 dist\launch.bat
 ```
 
-Desktop tray shell:
+Tray shell in your normal browser:
 
 ```text
 dist\launch_desktop.bat
 ```
 
-The tray shell starts the local server and provides menu actions for the dashboard, data folder, clips folder, reports folder, restart, stop, and quit. It also runs a local watchdog that restarts the server after an unexpected process exit or repeated failed health checks, unless the user chose Stop or Quit.
+The app-window shell opens the dashboard in a standalone Edge app window and provides tray menu actions for the app window, browser dashboard, data folder, clips folder, reports folder, restart, stop, and quit. If Edge is unavailable, it falls back to the default browser.
+
+Both tray launchers run a local watchdog that restarts the server after an unexpected process exit or repeated failed health checks, unless the user chose Stop or Quit. Logs are written to `logs\windows-app-shell.log` or `logs\desktop-shell.log`.
 
 The packaged app includes the automation panel, persistent background job queue, auto-import watcher with file-stability checks, storage cleanup, retention, analytics, logs, backups, advanced search/filter, report export, local stat import, memory export/import, app version/schema metadata, provider registry, plugin registry, installer diagnostics, detector benchmark metrics, privacy audit/export/wipe controls, playbook editor, correction review queue, Smart Queue, Story reconstruction, clip annotations, Personal Coach v2, and optional local-AI command review. Optional tools still need to be installed or placed in `tools`.
 
@@ -33,11 +43,19 @@ Create a desktop shortcut:
 powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1
 ```
 
+The shortcut targets `launch_app.bat` by default. To create a shortcut for a different launcher:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1 -Launcher launch_desktop.bat
+```
+
 Enable start at login:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\set_startup.ps1
 ```
+
+Startup also targets `launch_app.bat` by default. Pass `-Launcher launch_desktop.bat` if you prefer the browser tray shell.
 
 Disable start at login:
 
@@ -121,3 +139,5 @@ Output:
 ```text
 dist\valorant-coach-agent-windows.zip
 ```
+
+The generated installer shortcut launches `launch_app.bat`, so the installed app opens as a standalone app window with tray controls.

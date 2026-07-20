@@ -21,6 +21,7 @@ $items = @(
     "run.py",
     "valorant_coach_app.py",
     "launch.bat",
+    "launch_app.bat",
     "launch_desktop.bat"
 )
 
@@ -41,7 +42,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $shortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "VALORANT Coach Agent.lnk"
 $shell = New-Object -ComObject WScript.Shell
 $link = $shell.CreateShortcut($shortcut)
-$link.TargetPath = Join-Path $root "launch_desktop.bat"
+$link.TargetPath = Join-Path $root "launch_app.bat"
 $link.WorkingDirectory = $root
 $link.IconLocation = "$env:SystemRoot\System32\shell32.dll,220"
 $link.Save()

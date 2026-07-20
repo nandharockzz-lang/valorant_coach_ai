@@ -14,6 +14,7 @@ Copy-Item -Force -Path (Join-Path $root "run.py") -Destination $out
 Copy-Item -Force -Path (Join-Path $root "valorant_coach_app.py") -Destination $out
 Copy-Item -Force -Path (Join-Path $root "launch.bat") -Destination $out
 Copy-Item -Force -Path (Join-Path $root "launch_desktop.bat") -Destination $out
+Copy-Item -Force -Path (Join-Path $root "launch_app.bat") -Destination $out
 Copy-Item -Force -Path (Join-Path $root "README.md") -Destination $out
 Copy-Item -Force -Path (Join-Path $root "INSTALL.md") -Destination $out
 Copy-Item -Force -Path (Join-Path $root "PACKAGING.md") -Destination $out
@@ -26,4 +27,5 @@ New-Item -ItemType Directory -Force -Path (Join-Path $out "tools") | Out-Null
 
 Write-Host "Packaged to $out"
 Write-Host "Optional: place ffmpeg at $out\tools\ffmpeg\bin\ffmpeg.exe"
-Write-Host "Run with launch.bat"
+Write-Host "Run app window with launch_app.bat"
+Write-Host "Run browser mode with launch.bat"

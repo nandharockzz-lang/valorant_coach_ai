@@ -1,6 +1,6 @@
 # Install VALORANT Coach Agent On Another System
 
-This guide installs the local-first VALORANT Coach Agent on a Windows PC. The app runs in your browser at `localhost` and does not hook VALORANT, read game memory, inspect packets, automate input, or provide live tactical advice.
+This guide installs the local-first VALORANT Coach Agent on a Windows PC. The app runs locally at `localhost` and can open in either a browser or a Windows app-window shell. It does not hook VALORANT, read game memory, inspect packets, automate input, or provide live tactical advice.
 
 ## Requirements
 
@@ -60,13 +60,25 @@ http://127.0.0.1:8766
 
 Keep the PowerShell window open while using the app. Press `Ctrl+C` in that window to stop the server.
 
-For a desktop-style launcher with a tray menu:
+For the app-window launcher with a tray menu:
+
+```powershell
+launch_app.bat
+```
+
+This opens the dashboard in a standalone Microsoft Edge app window instead of a normal browser tab. The tray menu can open the app window, open the browser dashboard, open data/clips/reports folders, restart the server, stop the server, or quit. This is an app-window shell around the local web UI, not a compiled native WebView2 binary yet.
+
+For plain browser mode:
+
+```powershell
+launch.bat
+```
+
+For tray-only browser mode:
 
 ```powershell
 launch_desktop.bat
 ```
-
-The tray menu can open the dashboard, data folder, clips folder, reports folder, restart the server, stop the server, or quit.
 
 ## Automation
 
@@ -109,10 +121,11 @@ Use **Smart Queue** to group high-value review items into themes. Use **Story** 
 
 The watcher waits until a recording file size is stable before importing, so it should not grab an actively written VOD.
 
-The desktop tray launcher includes a watchdog. If the server process exits unexpectedly or fails three local health checks, it restarts the server and writes a note to:
+The app-window and desktop tray launchers include a watchdog. If the server process exits unexpectedly or fails three local health checks, it restarts the server and writes a note to:
 
 ```text
 logs\desktop-shell.log
+logs\windows-app-shell.log
 ```
 
 ## If Port 8766 Is Busy
