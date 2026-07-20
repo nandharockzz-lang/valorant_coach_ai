@@ -540,7 +540,7 @@ def run_local_ai_moment_review(
             "max_tokens": 700,
         }
     try:
-        response = post_json(endpoint, body, timeout=120)
+        response = post_json(endpoint, body, timeout=240)
         text = response.get("response") or (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or json.dumps(response)
         review = parse_moment_review(text, status["provider"], moment)
     except Exception as exc:
@@ -938,7 +938,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.10.8-local"
+APP_VERSION = "0.10.9-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -949,6 +949,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Use a higher-density final 5-second local AI frame sequence to catch fast enemy peeks before death.",
             "Move transient app status messages from the Recordings card into a fixed bottom status bar.",
             "Send a dense 10-second pre-death frame sequence to local vision models instead of only a few keyframes.",
             "Ground local vision-model reviews with ordered setup, pre-contact, pressure, correction, death, and aftermath keyframes.",
@@ -1542,7 +1543,7 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
         "death": death,
         "annotations": death.get("annotations") or [],
         "clip_path": death.get("clip_path"),
-        "keyframes": keyframe_payload(db, death_id, analysis_type="local_ai_sequence", limit=24),
+        "keyframes": keyframe_payload(db, death_id, analysis_type="local_ai_sequence", limit=36),
         "prompt": render_model_prompt(db, death),
         "privacy": "local-only",
     }
@@ -1655,8 +1656,9 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
     )
     return (
         base
-        + "\n\nYou will receive an ordered frame sequence sampled across the full 10 seconds before this death marker. "
+        + "\n\nYou will receive a high-density ordered frame sequence from the final 5 seconds before this death marker. "
         "Treat the images as a short local video clip in chronological order. Track crosshair movement, clearing path, movement while aiming, minimap/HUD changes, and fight setup over time. "
+        "Enemies can appear for only one or two frames, so scan every frame for a visible opponent, damage cue, tracer, muzzle flash, or sudden contact. "
         "Use only visible evidence from those frames. Do not assume enemy positions, player intent, comms, utility usage, or the outcome unless visible. "
         "If the frames do not prove a claim, write 'insufficient visual evidence' and reduce confidence. "
         "Return strict JSON with keys: summary, visible_evidence, labels, better_play, drill, confidence."
@@ -1708,7 +1710,7 @@ def run_local_http_review(db: Database, death_id: int, payload: Dict[str, Any], 
             "max_tokens": 900,
         }
     try:
-        response = post_json(endpoint, body, timeout=120)
+        response = post_json(endpoint, body, timeout=240)
     except Exception as exc:
         return {"ok": False, "message": f"{provider} request failed: {exc}", "status": status}
     text = response.get("response") or (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or json.dumps(response)
@@ -1763,9 +1765,9 @@ def local_model_system_prompt(status: Dict[str, Any]) -> str:
             "Return strict compact JSON. Do not provide tactical advice unless directly supported by visible HUD text."
         )
     return (
-        "You are a VALORANT VOD coach reviewing an ordered local frame sequence from the 10 seconds before a death. "
+        "You are a VALORANT VOD coach reviewing a high-density ordered local frame sequence from the final 5 seconds before a death. "
         "Return strict compact JSON with summary, visible_evidence, labels, better_play, drill, confidence. "
-        "Analyze how the player clears, moves, aims, checks HUD/minimap, and enters the fight across time. "
+        "Analyze how the player clears, moves, aims, checks HUD/minimap, and enters the fight across time. Enemies may be visible for only one or two frames, so inspect the whole sequence frame-by-frame. "
         "Use only visible frame evidence. Do not invent hidden enemies, comms, unseen utility, prior context, or player intent. "
         "If the sequence is visually insufficient, say 'insufficient visual evidence' and set confidence below 0.45."
     )

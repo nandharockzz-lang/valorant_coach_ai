@@ -778,8 +778,8 @@ def build_local_ai_review_sequence(
     db: Database,
     death_id: int,
     work_dir: Path,
-    seconds_before: float = 10.0,
-    fps: int = 2,
+    seconds_before: float = 5.0,
+    fps: int = 6,
 ) -> Dict[str, Any]:
     death = db.get_death(death_id)
     if not death:
@@ -801,7 +801,7 @@ def build_local_ai_review_sequence(
     frame_dir = work_dir / "local-ai-sequences" / f"death-{death_id}"
     frames = extract_sequence_frames(ffmpeg, source, frame_dir, float(source_info["start"]), float(source_info["duration"]), fps)
     if not frames:
-        return {"ok": False, "message": "No frames could be extracted for the 10-second local AI sequence.", "analysis": None}
+        return {"ok": False, "message": "No frames could be extracted for the high-density local AI sequence.", "analysis": None}
     timeline = build_timeline(frames, db.get_calibration())
     if not timeline:
         return {"ok": False, "message": "No readable frames were available for local AI sequence review.", "analysis": None}
@@ -836,7 +836,7 @@ def build_local_ai_review_sequence(
     result = {
         "kind": "local_ai_sequence",
         "death_id": death_id,
-        "summary": f"Prepared {len(sequence)} ordered frame(s) from the {seconds_before:g} seconds before death.",
+        "summary": f"Prepared {len(sequence)} ordered frame(s) at {fps} FPS from the final {seconds_before:g} seconds before death.",
         "frames": sequence,
         "fps": fps,
         "seconds_before": seconds_before,
@@ -866,7 +866,7 @@ def local_ai_sequence_source(db: Database, death: Dict[str, Any], seconds_before
         return {
             "kind": "clip",
             "source": Path(clip_path),
-            "start": 5.0,
+            "start": max(0.0, 15.0 - seconds_before),
             "duration": seconds_before,
             "vod_timestamp_start": None,
         }
@@ -893,7 +893,7 @@ def extract_sequence_frames(ffmpeg: str, source: Path, frame_dir: Path, start: f
         "-t",
         f"{max(0.5, duration):.2f}",
         "-vf",
-        f"fps={fps},scale=512:-1",
+        f"fps={fps},scale=640:-1",
         "-q:v",
         "5",
         output_pattern,
