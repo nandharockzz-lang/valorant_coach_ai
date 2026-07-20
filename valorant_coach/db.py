@@ -1158,6 +1158,10 @@ class Database:
                 (round_number, timestamp, json.dumps(labels), notes, confidence, death_id),
             )
 
+    def update_death_round_number(self, death_id: int, round_number: int) -> None:
+        with self.connect() as conn:
+            conn.execute("UPDATE deaths SET round_number = ? WHERE id = ?", (round_number, death_id))
+
     def update_death_clip(self, death_id: int, clip_path: str) -> None:
         with self.connect() as conn:
             conn.execute("UPDATE deaths SET clip_path = ? WHERE id = ?", (clip_path, death_id))

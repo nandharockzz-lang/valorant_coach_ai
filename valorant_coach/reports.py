@@ -19,6 +19,7 @@ def build_report(db: Database, match_id: int) -> Dict[str, Any]:
             "hud",
             "minimap",
             "ocr",
+            "scoreboard_rounds",
             "death_events_v2",
             "round_timeline",
             "crosshair",
@@ -122,8 +123,8 @@ def render_markdown(report: Dict[str, Any]) -> str:
     for death in report["deaths"]:
         labels = ", ".join(death.get("mistake_labels") or ["unlabeled"])
         ts = format_ts(death.get("timestamp"))
-        round_number = death.get("round_number") or "?"
-        lines.append(f"- R{round_number} @ {ts}: {labels}. {death.get('notes') or ''}".rstrip())
+        round_label = f"Round {death.get('round_number')}" if death.get("round_number") else "Round unknown"
+        lines.append(f"- {round_label} @ {ts}: {labels}. {death.get('notes') or ''}".rstrip())
         if death.get("advice"):
             advice = death["advice"]
             lines.append(f"  - Advice: {advice['better_play']}")

@@ -73,7 +73,15 @@ from .automation import (
 from .clipper import extract_death_clips, ffmpeg_path
 from .coach import build_coach_dashboard, build_guided_match_coach, build_match_review
 from .db import Database
-from .deep_analysis import ai_review_status, analyze_gameplay, analyze_hud, analyze_minimap, analyze_ocr, tesseract_path
+from .deep_analysis import (
+    ai_review_status,
+    analyze_gameplay,
+    analyze_hud,
+    analyze_minimap,
+    analyze_ocr,
+    infer_rounds_from_scoreboard,
+    tesseract_path,
+)
 from .reports import build_report, write_markdown_report
 from .vision import (
     analyze_match_events,
@@ -410,6 +418,9 @@ class CoachHandler(BaseHTTPRequestHandler):
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/ocr"):
                 match_id = int(parsed.path.split("/")[3])
                 self.json_response(analyze_ocr(DB, match_id, DEEP_DIR))
+            elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/scoreboard-rounds"):
+                match_id = int(parsed.path.split("/")[3])
+                self.json_response(infer_rounds_from_scoreboard(DB, match_id, DEEP_DIR))
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/deaths"):
                 match_id = int(parsed.path.split("/")[3])
                 payload = self.read_json()

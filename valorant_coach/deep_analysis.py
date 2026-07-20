@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -6,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter, ImageOps
 
 from .db import Database
 from .vision import build_timeline, extract_scan_frames, ffmpeg_path
@@ -102,6 +103,63 @@ def analyze_ocr(db: Database, match_id: int, work_dir: Path) -> Dict[str, Any]:
     }
     db.save_structured_analysis(match_id, "ocr", result)
     return {"ok": True, "message": result["summary"], "analysis": result}
+
+
+def infer_rounds_from_scoreboard(db: Database, match_id: int, work_dir: Path) -> Dict[str, Any]:
+    match = db.get_match(match_id)
+    if not match:
+        raise ValueError(f"Unknown match id: {match_id}")
+    video_path = Path(match["video_path"])
+    if not video_path.exists():
+        return {"ok": False, "message": "Video file is missing.", "analysis": None}
+    ffmpeg = ffmpeg_path()
+    if not ffmpeg:
+        return {"ok": False, "message": "ffmpeg is required for scoreboard round detection.", "analysis": None}
+    tesseract = tesseract_path()
+    if not tesseract:
+        return {
+            "ok": False,
+            "message": "Tesseract OCR is required to read the top scoreboard.",
+            "analysis": {"engine": "tesseract", "available": False},
+        }
+
+    deaths = [
+        death
+        for death in db.get_deaths(match_id)
+        if death.get("timestamp") is not None and not death.get("round_number")
+    ]
+    frame_dir = work_dir / "scoreboard-rounds" / f"match-{match_id}"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+    updated = 0
+    for death in deaths:
+        timestamp = max(0.0, float(death["timestamp"]) - 2.0)
+        frame_path = frame_dir / f"death-{int(death['id'])}.jpg"
+        extracted = extract_single_frame(ffmpeg, video_path, timestamp, frame_path)
+        if not extracted:
+            results.append({"death_id": death["id"], "timestamp": death["timestamp"], "status": "frame_failed"})
+            continue
+        read = read_scoreboard_round(tesseract, frame_path, frame_dir, int(death["id"]))
+        if read.get("round_number"):
+            db.update_death_round_number(int(death["id"]), int(read["round_number"]))
+            updated += 1
+        results.append({"death_id": death["id"], "timestamp": death["timestamp"], **read})
+
+    analysis = {
+        "kind": "scoreboard_rounds",
+        "summary": f"Read scoreboard scores for {len(results)} death marker(s); updated {updated} round number(s).",
+        "updated": updated,
+        "checked": len(results),
+        "reads": results,
+        "confidence": round(
+            sum(float(item.get("confidence") or 0) for item in results) / len(results),
+            2,
+        )
+        if results
+        else 0.0,
+    }
+    db.save_structured_analysis(match_id, "scoreboard_rounds", analysis)
+    return {"ok": True, "message": analysis["summary"], "analysis": analysis}
 
 
 def analyze_gameplay(db: Database, death_id: int) -> Dict[str, Any]:
@@ -253,6 +311,116 @@ def minimap_spacing_read(items: List[Dict[str, float]]) -> Dict[str, Any]:
     if avg_density > 0.15:
         return {"risk": "spacing-review", "reason": "Marker density is high enough to review whether deaths happened isolated from teammate support."}
     return {"risk": "moderate", "reason": "Minimap signal is usable but not strong enough for a sharp spacing conclusion."}
+
+
+def extract_single_frame(ffmpeg: str, video_path: Path, timestamp: float, output_path: Path) -> bool:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-ss",
+        f"{timestamp:.2f}",
+        "-i",
+        str(video_path),
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=960:-1",
+        "-q:v",
+        "3",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result.returncode == 0 and output_path.exists()
+
+
+def read_scoreboard_round(tesseract: str, frame_path: Path, work_dir: Path, death_id: int) -> Dict[str, Any]:
+    image = Image.open(frame_path).convert("RGB")
+    crops = scoreboard_score_crops(image)
+    reads = {}
+    for key, crop_img in crops.items():
+        crop_path = work_dir / f"death-{death_id}-{key}.png"
+        preprocess_score_crop(crop_img).save(crop_path)
+        text = run_tesseract_digits(tesseract, crop_path)
+        value = parse_score_digit(text)
+        reads[key] = {"text": text, "score": value, "crop": str(crop_path)}
+    left = reads["left"]["score"]
+    right = reads["right"]["score"]
+    if left is None or right is None:
+        return {
+            "status": "unreadable",
+            "left_score": left,
+            "right_score": right,
+            "round_number": None,
+            "confidence": 0.0,
+            "raw": reads,
+        }
+    round_number = int(left) + int(right) + 1
+    valid = 1 <= round_number <= 30 and 0 <= int(left) <= 14 and 0 <= int(right) <= 14
+    return {
+        "status": "read" if valid else "out_of_range",
+        "left_score": int(left),
+        "right_score": int(right),
+        "round_number": round_number if valid else None,
+        "confidence": 0.82 if valid else 0.25,
+        "raw": reads,
+    }
+
+
+def scoreboard_score_crops(image: Image.Image) -> Dict[str, Image.Image]:
+    width, height = image.size
+    # VALORANT's top scoreboard is centered. These crops target the two score numbers
+    # beside the round timer and avoid player icons on the far left/right.
+    boxes = {
+        "left": (0.425, 0.015, 0.485, 0.095),
+        "right": (0.515, 0.015, 0.575, 0.095),
+    }
+    return {
+        key: image.crop(
+            (
+                int(width * left),
+                int(height * top),
+                int(width * right),
+                int(height * bottom),
+            )
+        )
+        for key, (left, top, right, bottom) in boxes.items()
+    }
+
+
+def preprocess_score_crop(image: Image.Image) -> Image.Image:
+    gray = ImageOps.grayscale(image)
+    gray = ImageOps.autocontrast(gray)
+    gray = gray.resize((gray.width * 4, gray.height * 4))
+    gray = gray.filter(ImageFilter.SHARPEN)
+    return gray.point(lambda value: 255 if value > 145 else 0)
+
+
+def run_tesseract_digits(tesseract: str, image_path: Path) -> str:
+    cmd = [
+        tesseract,
+        str(image_path),
+        "stdout",
+        "--psm",
+        "7",
+        "-c",
+        "tessedit_char_whitelist=0123456789",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return ""
+    return "".join(result.stdout.split())
+
+
+def parse_score_digit(text: str) -> Optional[int]:
+    match = re.search(r"\d{1,2}", text or "")
+    if not match:
+        return None
+    value = int(match.group(0))
+    return value if 0 <= value <= 14 else None
 
 
 def ocr_timeline_events(reads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

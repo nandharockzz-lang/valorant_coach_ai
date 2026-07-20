@@ -17,7 +17,7 @@ from .analyzer import analyze_match, import_video, scan_recording_folder
 from .clipper import extract_death_clips
 from .coach import build_coach_dashboard, build_guided_match_coach
 from .db import Database
-from .deep_analysis import analyze_hud, analyze_minimap, analyze_ocr
+from .deep_analysis import analyze_hud, analyze_minimap, analyze_ocr, infer_rounds_from_scoreboard
 from .reports import build_report, write_markdown_report
 from .clipper import ffmpeg_path
 from .deep_analysis import tesseract_path
@@ -263,6 +263,7 @@ def run_match_pipeline(
         ("minimap", 48, lambda: analyze_minimap(db, match_id, dirs["deep"])),
         ("crosshair", 58, lambda: score_crosshair_match(db, match_id, dirs["vision"])),
         ("ocr", 68, lambda: analyze_ocr(db, match_id, dirs["deep"])),
+        ("scoreboard_rounds", 72, lambda: infer_rounds_from_scoreboard(db, match_id, dirs["deep"])),
         ("suggest_deaths", 76, lambda: suggest_deaths(db, match_id, dirs["vision"])),
         ("clips", 84, lambda: extract_clips_for_match(db, match_id, dirs["clips"])),
         ("death_batch", 92, lambda: run_death_batch(db, match_id, dirs)),
@@ -276,6 +277,7 @@ def run_match_pipeline(
             "minimap": "minimap",
             "crosshair": "crosshair",
             "ocr": "ocr",
+            "scoreboard_rounds": "scoreboard_rounds",
             "review_queue": "review_queue",
         }.get(name)
         if setting_bool(db, "skip_completed_analysis", True) and analysis_key and db.get_latest_structured_analysis("match", match_id, analysis_key):
@@ -323,6 +325,7 @@ def run_auto_coach_pipeline(
         ("minimap", "reading minimap activity", 38, lambda: analyze_minimap(db, match_id, dirs["deep"])),
         ("crosshair", "scoring crosshair placement", 47, lambda: score_crosshair_match(db, match_id, dirs["vision"])),
         ("ocr", "running local OCR on calibrated HUD regions", 55, lambda: analyze_ocr(db, match_id, dirs["deep"])),
+        ("scoreboard_rounds", "reading top scoreboard scores for round numbers", 59, lambda: infer_rounds_from_scoreboard(db, match_id, dirs["deep"])),
         ("suggest_deaths", "finding likely deaths from video signals", 64, lambda: suggest_deaths(db, match_id, dirs["vision"])),
     ]
     for name, message, progress, fn in steps:
@@ -898,7 +901,7 @@ def export_report(db: Database, match_id: int, fmt: str) -> Dict[str, Any]:
         return {"ok": True, "format": "json", "content": json.dumps(report, indent=2, default=str)}
     if fmt == "html":
         deaths = "".join(
-            f"<li>R{death.get('round_number') or '?'} @ {death.get('timestamp')}: {', '.join(death.get('mistake_labels') or [])}</li>"
+            f"<li>{death_round_label(death)} @ {death.get('timestamp')}: {', '.join(death.get('mistake_labels') or [])}</li>"
             for death in report["deaths"]
         )
         html = f"""<!doctype html><html><head><meta charset='utf-8'><title>Match {match_id}</title></head>
@@ -925,7 +928,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.10.3-local"
+APP_VERSION = "0.10.4-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -936,6 +939,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Infer unknown death marker rounds from top scoreboard score OCR.",
             "Simplify the match review UI around video, coach priorities, readable suggestions, and compact advice cards.",
             "Shorten generated advice into one diagnosis, one action, and one practice item.",
             "Confirmed death markers are preserved when Auto Coach, Analyze, or Find Deaths runs.",
@@ -1596,11 +1600,15 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
     template = templates.get(key) or templates["default"]
     labels = ", ".join(death.get("mistake_labels") or [])
     return template["prompt"].format(
-        round=death.get("round_number") or "?",
+        round=death_round_label(death),
         timestamp=death.get("timestamp") or "?",
         labels=labels or "unlabeled",
         notes=death.get("notes") or "",
     )
+
+
+def death_round_label(death: Dict[str, Any]) -> str:
+    return f"Round {death.get('round_number')}" if death.get("round_number") else "Round unknown"
 
 
 def run_local_http_review(db: Database, death_id: int, payload: Dict[str, Any], status: Dict[str, Any]) -> Dict[str, Any]:

@@ -100,9 +100,10 @@ def advice_source(death: Dict[str, Any]) -> str:
 def context_sentence(match: Dict[str, Any], death: Dict[str, Any], source: str, phase: str) -> str:
     map_name = match.get("map") or "unknown map"
     agent = match.get("agent") or "unknown agent"
-    round_number = death.get("round_number") or "?"
+    round_number = death.get("round_number")
     timestamp = format_ts(death.get("timestamp"))
-    return f"R{round_number} at {timestamp} on {map_name} as {agent}, {phase}:"
+    round_text = f"Round {round_number}" if round_number else "Round unknown"
+    return f"{round_text} at {timestamp} on {map_name} as {agent}, {phase}:"
 
 
 def infer_primary_from_notes(notes: str) -> str:

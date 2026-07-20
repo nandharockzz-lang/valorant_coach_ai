@@ -1115,6 +1115,7 @@ async function loadMatches() {
             <button data-action="batch-deaths" data-id="${match.id}">Batch Deaths</button>
             <button data-action="events-v2" data-id="${match.id}">Death Detector</button>
             <button data-action="rounds" data-id="${match.id}">Rounds</button>
+            <button data-action="scoreboard-rounds" data-id="${match.id}">Scoreboard Rounds</button>
             <button data-action="hud" data-id="${match.id}">HUD</button>
             <button data-action="minimap" data-id="${match.id}">Minimap</button>
             <button data-action="crosshair" data-id="${match.id}">Crosshair</button>
@@ -1399,7 +1400,7 @@ function renderCoachPriorities(report, coachMoments) {
     cards.push(`
       <article class="priority-card">
         <span>Best Starting Clip</span>
-        <strong>R${deathWithAdvice.round_number || "?"} @ ${formatTs(deathWithAdvice.timestamp)}</strong>
+        <strong>${escapeHtml(formatDeathTime(deathWithAdvice))}</strong>
         <p>${escapeHtml(deathWithAdvice.advice.better_play || deathWithAdvice.advice.what_happened || "Open this marker first.")}</p>
         <button class="secondary" data-action="jump" data-ts="${escapeAttr(deathWithAdvice.timestamp || 0)}">Review Clip</button>
       </article>
@@ -1409,7 +1410,7 @@ function renderCoachPriorities(report, coachMoments) {
     cards.push(`
       <article class="priority-card">
         <span>Start Here</span>
-        <strong>R${firstDeath.round_number || "?"} @ ${formatTs(firstDeath.timestamp)}</strong>
+        <strong>${escapeHtml(formatDeathTime(firstDeath))}</strong>
         <p>Generate advice for this marker, then accept or reject it so the coach learns what is useful.</p>
         <button class="secondary" data-action="advice" data-id="${firstDeath.id}">Generate Advice</button>
       </article>
@@ -1553,7 +1554,7 @@ function renderVideoTimeline(deaths, suggestions, coachMoments = []) {
       .map((item) => ({
         kind: "death",
         timestamp: Number(item.timestamp),
-        label: `Marked death R${item.round_number || "?"} @ ${formatTs(item.timestamp)}`,
+        label: `Marked death ${formatDeathTime(item)}`,
       })),
     ...suggestions
       .filter((item) => item.timestamp !== null && item.timestamp !== undefined)
@@ -1828,7 +1829,7 @@ function renderDeathCard(death) {
     <article class="death-card" data-death-id="${death.id}">
       <div class="death-card-header">
         <div class="death-card-title">
-          <strong>R${death.round_number || "?"} · ${formatTs(death.timestamp)}</strong>
+          <strong>${escapeHtml(formatDeathTime(death))}</strong>
           ${renderTags(death.mistake_labels || [])}
         </div>
         <button class="secondary" data-action="jump" data-ts="${death.timestamp || 0}">Jump</button>
@@ -2251,6 +2252,14 @@ function formatTs(value) {
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+function formatDeathTime(death) {
+  const timestamp = formatTs(death.timestamp);
+  if (death.round_number) {
+    return `Round ${death.round_number} · ${timestamp}`;
+  }
+  return `${timestamp} · Round unknown`;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -2336,6 +2345,7 @@ els.matchesList.addEventListener("click", (event) => {
   if (action === "ocr") runMatchAnalysis(id, "ocr").catch((err) => setStatus(err.message));
   if (action === "events-v2") runMatchAnalysis(id, "events-v2").catch((err) => setStatus(err.message));
   if (action === "rounds") runMatchAnalysis(id, "rounds/reconstruct").catch((err) => setStatus(err.message));
+  if (action === "scoreboard-rounds") runMatchAnalysis(id, "scoreboard-rounds").catch((err) => setStatus(err.message));
   if (action === "crosshair") runMatchAnalysis(id, "crosshair").catch((err) => setStatus(err.message));
   if (action === "review-queue") runMatchAnalysis(id, "review-queue").catch((err) => setStatus(err.message));
   if (action === "review-queue-v2") runMatchAnalysis(id, "review-queue-v2").catch((err) => setStatus(err.message));

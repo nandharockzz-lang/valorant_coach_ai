@@ -846,7 +846,7 @@ def build_review_queue(db: Database, match_id: int) -> Dict[str, Any]:
                 "priority": death_priority(death),
                 "timestamp": death.get("timestamp"),
                 "round_phase": round_phase(rounds, death.get("timestamp")),
-                "title": f"Review death R{death.get('round_number') or '?'} @ {format_seconds(death.get('timestamp'))}",
+                "title": f"Review death {death_round_label(death)} @ {format_seconds(death.get('timestamp'))}",
                 "reason": ", ".join(death.get("mistake_labels") or []) or "marked death",
                 "action": "Generate clip understanding and compare against the current focus.",
             }
@@ -946,6 +946,10 @@ def format_seconds(value: Any) -> str:
         return "unknown"
     seconds = int(float(value))
     return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def death_round_label(death: Dict[str, Any]) -> str:
+    return f"Round {death.get('round_number')}" if death.get("round_number") else "Round unknown"
 
 
 def scan_fps(db: Database) -> str:
