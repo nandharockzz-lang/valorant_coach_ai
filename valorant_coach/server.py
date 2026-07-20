@@ -325,7 +325,12 @@ class CoachHandler(BaseHTTPRequestHandler):
                     lambda update, mid=match_id: run_match_pipeline(DB, mid, PATHS, update),
                 )
                 self.json_response({"ok": True, "job_id": job_id})
-            elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/auto-coach"):
+            elif parsed.path.startswith("/api/matches/") and (
+                parsed.path.endswith("/auto-coach")
+                or parsed.path.endswith("/auto_coach")
+                or parsed.path.endswith("/autocoach")
+                or parsed.path.endswith("/autoCoach")
+            ):
                 match_id = int(parsed.path.split("/")[3])
                 job_id = JOBS.start(
                     f"Auto coach match #{match_id}",
