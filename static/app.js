@@ -2,6 +2,7 @@ const els = {
   recordingDir: document.querySelector("#recordingDir"),
   videoPath: document.querySelector("#videoPath"),
   status: document.querySelector("#status"),
+  versionBadge: document.querySelector("#versionBadge"),
   matchesList: document.querySelector("#matchesList"),
   trendsView: document.querySelector("#trendsView"),
   capabilitiesView: document.querySelector("#capabilitiesView"),
@@ -62,6 +63,16 @@ async function api(path, options = {}) {
 async function loadSettings() {
   const payload = await api("/api/settings");
   els.recordingDir.value = payload.recording_dir || "";
+}
+
+async function loadVersionBadge() {
+  const version = await api("/api/version");
+  const commit = version.git || {};
+  const build = commit.commit_count ? `build ${commit.commit_count}` : version.build || "local";
+  const hash = commit.short_hash ? ` · ${commit.short_hash}` : "";
+  const dirty = commit.dirty ? " · dirty" : "";
+  els.versionBadge.textContent = `${version.version} · ${build}${hash}${dirty}`;
+  els.versionBadge.title = `Version ${version.version}\nBuild ${build}${hash}${dirty}\nBranch ${commit.branch || "unknown"}\nCommit date ${commit.commit_date || "unknown"}`;
 }
 
 async function loadAutomation() {
@@ -2167,7 +2178,7 @@ els.saveSettingsBtn.addEventListener("click", () => saveSettings().catch((err) =
 els.saveCalibrationBtn.addEventListener("click", () => saveCalibration().catch((err) => setStatus(err.message)));
 els.scanBtn.addEventListener("click", () => scanFolder().catch((err) => setStatus(err.message)));
 els.importBtn.addEventListener("click", () => importVideo().catch((err) => setStatus(err.message)));
-els.refreshBtn.addEventListener("click", () => Promise.all([loadMatches(), loadTrends(), loadCapabilities(), loadAutomation()]).catch((err) => setStatus(err.message)));
+els.refreshBtn.addEventListener("click", () => Promise.all([loadVersionBadge(), loadMatches(), loadTrends(), loadCapabilities(), loadAutomation()]).catch((err) => setStatus(err.message)));
 els.coachView.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
@@ -2287,7 +2298,7 @@ window.addEventListener("pointermove", moveCalibrationDrag);
 window.addEventListener("pointerup", stopCalibrationDrag);
 
 loadSettings()
-  .then(() => Promise.all([loadMatches(), loadTrends(), loadCoach(), loadCapabilities(), loadCalibration(), loadAutomation()]))
+  .then(() => Promise.all([loadVersionBadge(), loadMatches(), loadTrends(), loadCoach(), loadCapabilities(), loadCalibration(), loadAutomation()]))
   .then(() => {
     if (latestJobs.some((job) => ["queued", "running"].includes(job.status))) ensureJobPolling();
   })

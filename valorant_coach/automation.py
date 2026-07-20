@@ -954,9 +954,11 @@ APP_VERSION = "0.10.1-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
+    git = git_version_info()
     return {
         "version": APP_VERSION,
-        "build": "local-dev",
+        "build": f"git-{git['commit_count']}" if git.get("commit_count") else "local-dev",
+        "git": git,
         "schema": db.schema_info(),
         "changelog": [
             "Coach moment feedback and LM Studio connection testing for better local model setup and personalization.",
@@ -965,6 +967,36 @@ def app_version(db: Database) -> Dict[str, Any]:
             "Persistent jobs, logs, backups, retention, exports, and automation.",
             "Advanced search, playbook editing, correction review, privacy audit, provider registry.",
         ],
+    }
+
+
+def git_version_info() -> Dict[str, Any]:
+    root = Path(__file__).resolve().parent.parent
+
+    def run_git(args: List[str]) -> str:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if completed.returncode != 0:
+            return ""
+        return completed.stdout.strip()
+
+    commit_count = run_git(["rev-list", "--count", "HEAD"])
+    full_hash = run_git(["rev-parse", "HEAD"])
+    branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"])
+    commit_date = run_git(["show", "-s", "--format=%cI", "HEAD"])
+    dirty = bool(run_git(["status", "--porcelain"]))
+    return {
+        "commit_count": int(commit_count) if commit_count.isdigit() else None,
+        "hash": full_hash,
+        "short_hash": full_hash[:7] if full_hash else "",
+        "branch": branch,
+        "commit_date": commit_date,
+        "dirty": dirty,
     }
 
 
