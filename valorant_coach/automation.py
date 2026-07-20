@@ -18,6 +18,7 @@ from .clipper import extract_death_clips
 from .coach import build_coach_dashboard, build_guided_match_coach
 from .db import Database
 from .deep_analysis import analyze_hud, analyze_minimap, analyze_ocr, infer_rounds_from_scoreboard
+from .memory import build_memory_prompt_context, load_coach_memory_state, save_coach_memory_state, update_coach_memory_from_review
 from .reports import build_report, write_markdown_report
 from .clipper import ffmpeg_path
 from .deep_analysis import tesseract_path
@@ -830,6 +831,7 @@ def export_memory(db: Database) -> Dict[str, Any]:
     return {
         "exported_at": datetime.now().isoformat(timespec="seconds"),
         "profile": db.get_profile(),
+        "coach_memory_state": load_coach_memory_state(db),
         "coach": build_coach_dashboard(db),
         "trends": db.build_trends(),
         "detector_feedback": db.detector_feedback_summary(),
@@ -848,6 +850,9 @@ def import_memory(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
         target_style=str(profile.get("target_style") or ""),
         notes=str(profile.get("notes") or ""),
     )
+    memory_state = payload.get("coach_memory_state")
+    if isinstance(memory_state, dict):
+        save_coach_memory_state(db, memory_state)
     return {"ok": True, "message": "Profile memory imported. Historical analyses are kept read-only in the export file."}
 
 
@@ -939,7 +944,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.12.4-local"
+APP_VERSION = "0.12.5-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -950,6 +955,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Add persistent local coach memory that learns from completed Local AI clip reviews and feeds future prompts.",
             "Make Jump scroll back to the video, fold dashboard panels and Coach Mode, and require consensus before saving scoreboard OCR rounds.",
             "Add a separate aggregate Player Status tab and combine clip review actions into one Coach This Clip workflow.",
             "Add a visual Player Status report and display timeline/spacing-based round estimates when stored round numbers are missing.",
@@ -1614,6 +1620,7 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
         "provider": "local-command",
     }
     db.save_death_analysis(death_id, "local_ai_review", result)
+    update_coach_memory_from_review(db, death, result)
     return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
 
 
@@ -1697,6 +1704,8 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
     )
     return (
         base
+        + "\n\n"
+        + build_memory_prompt_context(db)
         + f"\n\nYou will receive an ordered frame sequence using this sampling mode: {sequence_profile['label']}. "
         "Treat the images as a short local video clip in chronological order. Track crosshair movement, clearing path, movement while aiming, minimap/HUD changes, and fight setup over time. "
         "Enemies can appear for only one or two frames, so scan every frame for a visible opponent, damage cue, tracer, muzzle flash, or sudden contact. "
@@ -1765,6 +1774,8 @@ def run_local_http_review_single(db: Database, death_id: int, payload: Dict[str,
     result = parse_model_review(text, provider)
     if save:
         db.save_death_analysis(death_id, "local_ai_review", result)
+        death = payload.get("death") or db.get_death(death_id) or {}
+        update_coach_memory_from_review(db, death, result)
     return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
 
 
@@ -1793,6 +1804,8 @@ def run_local_http_review_batched(
     combined["batch_reviews"] = chunk_reviews
     combined["batches"] = len(chunk_reviews)
     db.save_death_analysis(death_id, "local_ai_review", combined)
+    death = payload.get("death") or db.get_death(death_id) or {}
+    update_coach_memory_from_review(db, death, combined)
     return {"ok": True, "message": combined["summary"], "analysis": combined, "status": status}
 
 

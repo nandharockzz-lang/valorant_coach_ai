@@ -1338,6 +1338,7 @@ function renderCoach(coach) {
   const sessions = coach.sessions || {};
   const learning = coach.suggestion_learning || {};
   const memory = coach.memory || {};
+  const persistentMemory = memory.persistent || {};
   const outcomes = coach.outcomes || {};
   const coachV2 = coach.coach_v2 || {};
   const weekly = coachV2.weekly_focus || {};
@@ -1407,9 +1408,21 @@ function renderCoach(coach) {
     <details class="coach-plan fold-panel">
       <summary>Personal Coach Memory</summary>
       <p>${escapeHtml(memory.summary || "No learned memory yet.")}</p>
+      <div class="coach-progress">
+        <span>Learned reviews: ${Number(persistentMemory.persistent_review_count || 0)}</span>
+        <span>Focus: ${escapeHtml(persistentMemory.current_focus || memory.top_label || "learning")}</span>
+        <span>Updated: ${escapeHtml(persistentMemory.persistent_updated_at || "not yet")}</span>
+      </div>
+      ${renderMemoryPatterns(persistentMemory.top_patterns || [])}
       <ul class="compact-list">
         ${(memory.priorities || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
       </ul>
+      ${(persistentMemory.recent_lessons || []).length ? `
+        <p class="muted">Recent learned notes</p>
+        <ul class="compact-list">
+          ${(persistentMemory.recent_lessons || []).slice(0, 4).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+        </ul>
+      ` : ""}
       <p class="muted">${Number(memory.analysis_count || 0)} saved analysis read(s), ${Number(memory.recent_clip_reads || 0)} recent clip read(s).</p>
     </details>
     <details class="coach-plan fold-panel">
@@ -1422,6 +1435,15 @@ function renderCoach(coach) {
         <span>Detector rejected: ${escapeHtml((outcomes.detector_feedback || {}).rejected || 0)}</span>
       </div>
     </details>
+  `;
+}
+
+function renderMemoryPatterns(patterns) {
+  if (!patterns.length) return "";
+  return `
+    <div class="coach-progress">
+      ${patterns.slice(0, 4).map((item) => `<span>${escapeHtml(item.label)} x${Number(item.count || 0)}</span>`).join("")}
+    </div>
   `;
 }
 

@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional
 
 from .advice import ADVICE_BY_LABEL, generate_advice
 from .db import Database
+from .memory import load_coach_memory_state, memory_dashboard_overlay
 
 
 LABEL_PRESETS = [
@@ -421,6 +422,7 @@ def build_personal_memory(
     crosshair = match_reads.get("crosshair") or {}
     minimap = match_reads.get("minimap") or {}
     event_v2 = match_reads.get("death_events_v2") or {}
+    persistent = memory_dashboard_overlay(load_coach_memory_state(db))
 
     learned = []
     learned.append(f"Most repeated labeled issue: {top_label}.")
@@ -436,6 +438,10 @@ def build_personal_memory(
         learned.append(event_v2.get("summary") or "Death detector v2 has recent samples.")
     if clip_reads:
         learned.append(f"{len(clip_reads)} recent clip-understanding read(s) are available.")
+    if persistent["persistent_review_count"]:
+        learned.append(
+            f"Personal coach memory has learned from {persistent['persistent_review_count']} completed Local AI clip review(s)."
+        )
 
     priorities = []
     if "crosshair" in top_label or float((crosshair.get("metrics") or {}).get("average_crosshair_activity") or 0) > 0.10:
@@ -444,15 +450,19 @@ def build_personal_memory(
         priorities.append("Review minimap timing before rotations and retakes.")
     if "dry peek" in top_label:
         priorities.append("Require utility, info, or trade timing before committed first contact.")
+    for rule in persistent["learned_rules"]:
+        if rule not in priorities:
+            priorities.append(rule)
     if not priorities:
         priorities.append("Keep collecting labeled deaths and accept/reject coach advice to sharpen personalization.")
 
     return {
         "summary": " ".join(learned),
-        "top_label": top_label,
+        "top_label": persistent["current_focus"] or top_label,
         "priorities": priorities[:4],
         "recent_clip_reads": len(clip_reads),
         "analysis_count": len(analyses),
+        "persistent": persistent,
     }
 
 
