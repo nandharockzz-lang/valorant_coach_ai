@@ -51,6 +51,7 @@ from .automation import (
     run_local_ai_review,
     run_match_pipeline,
     save_benchmark_label,
+    save_coach_moment_feedback,
     save_clip_annotation,
     save_local_ai_config,
     save_manual_correction,
@@ -63,6 +64,7 @@ from .automation import (
     setup_wizard_status,
     smart_review_queue_v2,
     storage_stats,
+    test_local_ai_connection,
     tool_status,
     coach_dashboard_v2,
     reconstruct_round_story,
@@ -253,6 +255,8 @@ class CoachHandler(BaseHTTPRequestHandler):
                 self.json_response(save_setup_wizard(DB, self.read_json()))
             elif parsed.path == "/api/local-ai/config":
                 self.json_response(save_local_ai_config(DB, self.read_json()))
+            elif parsed.path == "/api/local-ai/test":
+                self.json_response(test_local_ai_connection(DB, self.read_json()))
             elif parsed.path == "/api/prompts":
                 self.json_response(save_prompt_template(DB, self.read_json()))
             elif parsed.path == "/api/evaluation/labels":
@@ -335,6 +339,9 @@ class CoachHandler(BaseHTTPRequestHandler):
                     lambda update, mid=match_id: run_full_vod_coach_pipeline(DB, mid, PATHS, update),
                 )
                 self.json_response({"ok": True, "job_id": job_id})
+            elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/coach-moment-feedback"):
+                match_id = int(parsed.path.split("/")[3])
+                self.json_response(save_coach_moment_feedback(DB, match_id, self.read_json()))
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/batch-deaths"):
                 match_id = int(parsed.path.split("/")[3])
                 job_id = JOBS.start(

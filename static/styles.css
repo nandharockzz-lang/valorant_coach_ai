@@ -899,6 +899,27 @@ video {
   padding: 7px 9px;
 }
 
+.coach-moment-feedback {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.coach-moment-feedback .tag {
+  grid-column: 1 / -1;
+  width: fit-content;
+}
+
+.coach-moment-feedback input {
+  min-width: 0;
+}
+
+.coach-moment-feedback button {
+  padding: 7px 9px;
+  font-size: 12px;
+}
+
 .job-progress {
   display: grid;
   gap: 10px;

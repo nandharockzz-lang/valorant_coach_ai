@@ -59,6 +59,7 @@ def build_report(db: Database, match_id: int) -> Dict[str, Any]:
         "guided_coach": match_analyses.get("guided_coach"),
         "suggestions": suggestions,
         "match_analyses": match_analyses,
+        "coach_moment_feedback": db.list_subject_analyses("match", match_id, "coach_moment_feedback", limit=200),
     }
 
 

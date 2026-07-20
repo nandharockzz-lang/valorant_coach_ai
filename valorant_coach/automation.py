@@ -412,6 +412,7 @@ def run_full_vod_coach_pipeline(
 def rank_full_vod_moments(db: Database, match_id: int, moments: List[Dict[str, Any]]) -> Dict[str, Any]:
     trends = db.build_trends()
     personal_weights = trends.get("labels") or {}
+    feedback = coach_moment_feedback_summary(db)
     weight_map = {
         "crosshair_turn_drift": "crosshair too low/wide",
         "panic_correction_under_pressure": "dry peek",
@@ -423,10 +424,14 @@ def rank_full_vod_moments(db: Database, match_id: int, moments: List[Dict[str, A
         label = str(moment.get("label") or "")
         personal_label = weight_map.get(label, label)
         personal_boost = min(12, int(personal_weights.get(personal_label, 0)) * 3)
-        priority = min(100, int(moment.get("priority") or 0) + personal_boost)
+        label_feedback = feedback.get("by_label", {}).get(label, {})
+        feedback_boost = int(label_feedback.get("accepted", 0)) * 3 - int(label_feedback.get("rejected", 0)) * 4
+        priority = min(100, max(1, int(moment.get("priority") or 0) + personal_boost + feedback_boost))
         item = dict(moment)
+        item["moment_id"] = moment_key(moment)
         item["personal_label"] = personal_label
         item["personal_boost"] = personal_boost
+        item["feedback_boost"] = feedback_boost
         item["priority"] = priority
         ranked.append(item)
     ranked = sorted(ranked, key=lambda row: row["priority"], reverse=True)
@@ -440,7 +445,59 @@ def rank_full_vod_moments(db: Database, match_id: int, moments: List[Dict[str, A
         "moments": ranked,
         "focus": sorted(focus.values(), key=lambda row: (row["count"], row["max_priority"]), reverse=True),
         "personal_memory": personal_weights,
+        "feedback": feedback,
     }
+
+
+def moment_key(moment: Dict[str, Any]) -> str:
+    label = str(moment.get("label") or "moment").replace(" ", "_")
+    timestamp = float(moment.get("timestamp") or 0)
+    return f"{label}-{timestamp:.1f}"
+
+
+def coach_moment_feedback_summary(db: Database) -> Dict[str, Any]:
+    rows = [
+        item for item in db.list_structured_analyses("match", limit=1000)
+        if item.get("analysis_type") == "coach_moment_feedback"
+    ]
+    by_label: Dict[str, Dict[str, int]] = {}
+    by_moment: Dict[str, Dict[str, Any]] = {}
+    counts = {"accepted": 0, "rejected": 0}
+    for row in rows:
+        payload = row.get("payload") or {}
+        verdict = str(payload.get("verdict") or "")
+        if verdict not in counts:
+            continue
+        label = str(payload.get("label") or "unknown")
+        moment_id = str(payload.get("moment_id") or "")
+        by_label.setdefault(label, {"accepted": 0, "rejected": 0})
+        by_label[label][verdict] += 1
+        counts[verdict] += 1
+        if moment_id:
+            by_moment[moment_id] = payload
+    return {"counts": counts, "by_label": by_label, "by_moment": by_moment}
+
+
+def save_coach_moment_feedback(db: Database, match_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    verdict = str(payload.get("verdict") or "").strip()
+    if verdict not in {"accepted", "rejected"}:
+        return {"ok": False, "message": "verdict must be accepted or rejected"}
+    moment = {
+        "kind": "coach_moment_feedback",
+        "match_id": match_id,
+        "moment_id": str(payload.get("moment_id") or "").strip(),
+        "timestamp": optional_float(payload.get("timestamp")),
+        "label": str(payload.get("label") or "").strip(),
+        "title": str(payload.get("title") or "").strip(),
+        "verdict": verdict,
+        "note": str(payload.get("note") or "").strip(),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if not moment["moment_id"]:
+        moment["moment_id"] = moment_key(moment)
+    analysis_id = db.save_structured_analysis(match_id, "coach_moment_feedback", moment)
+    db.log("info", "coach-moment", f"Saved coach moment feedback #{analysis_id}", {"match_id": match_id, "verdict": verdict})
+    return {"ok": True, "id": analysis_id, "feedback": moment, "summary": coach_moment_feedback_summary(db)}
 
 
 def run_local_ai_moment_review(
@@ -533,10 +590,14 @@ def build_full_vod_coach_report(
     moments = ranked.get("moments") or []
     focus = ranked.get("focus") or []
     reviews_by_ts = {round(float(item.get("timestamp") or 0), 2): item for item in reviewed}
+    feedback_by_moment = coach_moment_feedback_summary(db).get("by_moment", {})
     enriched = []
     for moment in moments[:18]:
         review = reviews_by_ts.get(round(float(moment.get("timestamp") or 0), 2))
         item = dict(moment)
+        item["moment_id"] = item.get("moment_id") or moment_key(item)
+        if item["moment_id"] in feedback_by_moment:
+            item["feedback"] = feedback_by_moment[item["moment_id"]]
         if review and review.get("status") == "completed":
             item["ai_review"] = review
             item["reason"] = review.get("summary") or item.get("reason")
@@ -555,6 +616,7 @@ def build_full_vod_coach_report(
             "model": local_status.get("model"),
             "reviewed_moments": len(reviewed),
         },
+        "feedback_summary": coach_moment_feedback_summary(db),
         "next_action": "Review the first three moment markers before death review; they are likely mechanics or decision problems that happened before obvious death events.",
         "confidence": round(min(0.85, 0.35 + len(moments) * 0.03 + len(reviewed) * 0.04), 2) if moments else 0.0,
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -888,7 +950,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.10.0-local"
+APP_VERSION = "0.10.1-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -897,6 +959,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "build": "local-dev",
         "schema": db.schema_info(),
         "changelog": [
+            "Coach moment feedback and LM Studio connection testing for better local model setup and personalization.",
             "Full VOD Coach scans whole matches for crosshair, pressure, minimap, and reset moments with optional local vision-model review.",
             "Auto Coach pipeline with high-confidence death promotion, advice generation, and visible job progress.",
             "Persistent jobs, logs, backups, retention, exports, and automation.",
@@ -1368,6 +1431,58 @@ def save_local_ai_config(db: Database, payload: Dict[str, Any]) -> Dict[str, Any
     return {"ok": True, "local_ai": local_ai_status(db)}
 
 
+def test_local_ai_connection(db: Database, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = payload or {}
+    if payload:
+        provider = str(payload.get("provider") or "lmstudio").strip()
+        status = {
+            "provider": provider,
+            "command": str(payload.get("command") or "").strip(),
+            "base_url": str(payload.get("base_url") or default_base_url(provider)).strip(),
+            "model": str(payload.get("model") or "").strip(),
+            "enabled": True,
+        }
+    else:
+        status = local_ai_status(db)
+    provider = status.get("provider")
+    if provider == "custom-command":
+        return {
+            "ok": bool(status.get("command")),
+            "message": "Custom command configured." if status.get("command") else "Custom command is empty.",
+            "status": status,
+            "models": [],
+        }
+    base_url = str(status.get("base_url") or "").rstrip("/")
+    if not base_url:
+        return {"ok": False, "message": "Base URL is empty.", "status": status, "models": []}
+    try:
+        if provider == "ollama":
+            response = get_json(base_url + "/api/tags", timeout=8)
+            models = [item.get("name") for item in response.get("models", []) if item.get("name")]
+        else:
+            response = get_json(base_url + "/models", timeout=8)
+            models = [item.get("id") for item in response.get("data", []) if item.get("id")]
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"Could not reach {provider}: {exc}",
+            "status": status,
+            "models": [],
+        }
+    configured_model = str(status.get("model") or "")
+    model_ready = not configured_model or configured_model in models
+    message = f"Connected to {provider}. Found {len(models)} model(s)."
+    if configured_model and not model_ready:
+        message += f" Configured model '{configured_model}' was not in the model list."
+    return {
+        "ok": True,
+        "message": message,
+        "status": status,
+        "models": models,
+        "configured_model_ready": model_ready,
+    }
+
+
 def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
     status = local_ai_status(db)
     death = db.get_death(death_id)
@@ -1504,6 +1619,12 @@ def run_local_http_review(db: Database, death_id: int, payload: Dict[str, Any], 
 def post_json(url: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
     data = json.dumps(body).encode("utf-8")
     req = urlrequest.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    with urlrequest.urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8") or "{}")
+
+
+def get_json(url: str, timeout: int = 60) -> Dict[str, Any]:
+    req = urlrequest.Request(url, headers={"Accept": "application/json"}, method="GET")
     with urlrequest.urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8") or "{}")
 

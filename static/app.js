@@ -243,8 +243,10 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
       <label>Custom command <input id="localAiCommand" type="text" value="${escapeAttr(localAi.command || "")}" placeholder="python C:\\path\\review_clip.py" /></label>
       <div class="row">
         <button class="secondary" data-action="use-lmstudio-defaults">Use LM Studio Defaults</button>
+        <button class="secondary" data-action="test-local-ai">Test Local AI</button>
         <button class="secondary" data-action="save-local-ai">Save Local AI</button>
       </div>
+      <div id="localAiTestResult" class="muted"></div>
       <p class="muted">${escapeHtml(localAi.expected_protocol || "")}</p>
     </div>
     <div class="automation-block">
@@ -541,6 +543,33 @@ function useLmStudioDefaults() {
   if (model && !model.value) model.value = "local-model";
   if (command) command.value = "";
   setStatus("LM Studio defaults filled. If LM Studio shows a specific model ID, paste it into Model before saving.");
+}
+
+async function testLocalAiConfig() {
+  const payload = {
+    provider: document.querySelector("#localAiProvider").value,
+    model: document.querySelector("#localAiModel").value,
+    base_url: document.querySelector("#localAiBaseUrl").value,
+    command: document.querySelector("#localAiCommand").value,
+  };
+  const response = await fetch("/api/local-ai/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json();
+  const target = document.querySelector("#localAiTestResult");
+  const models = (result.models || []).slice(0, 8);
+  if (target) {
+    target.innerHTML = `
+      <p>${escapeHtml(result.message || "")}</p>
+      ${models.length ? `<p>Models: ${models.map(escapeHtml).join(", ")}</p>` : ""}
+    `;
+  }
+  if (result.ok && !payload.model && models.length) {
+    document.querySelector("#localAiModel").value = models[0];
+  }
+  setStatus(result.message || "Local AI test complete.");
 }
 
 async function saveSetupWizard() {
@@ -1261,7 +1290,10 @@ function renderReport(report) {
   const review = renderMatchReview(report.review);
   const guidedCoach = renderGuidedCoach(report.guided_coach, match.id);
   const suggestions = renderSuggestions(report.suggestions || []);
-  const coachMoments = (((report.match_analyses || {}).full_vod_coach || {}).payload || {}).moments || [];
+  const coachMoments = mergeCoachMomentFeedback(
+    (((report.match_analyses || {}).full_vod_coach || {}).payload || {}).moments || [],
+    report.coach_moment_feedback || []
+  );
   const timeline = renderVideoTimeline(report.deaths || [], report.suggestions || [], coachMoments);
   const coachMomentsView = renderCoachMoments(coachMoments);
   const matchAnalyses = renderMatchAnalyses(report.match_analyses || {});
@@ -1501,8 +1533,10 @@ function renderCoachMoments(moments) {
   const cards = moments.slice(0, 10).map((item, index) => {
     const ai = item.ai_review || {};
     const labels = renderTags([item.personal_label || item.label].concat(item.secondary_labels || []).filter(Boolean));
+    const feedback = item.feedback || {};
+    const feedbackText = feedback.verdict ? `<span class="tag">${escapeHtml(feedback.verdict)}</span>` : "";
     return `
-      <article class="coach-moment-card">
+      <article class="coach-moment-card" data-moment-id="${escapeAttr(item.moment_id || "")}">
         <div class="coach-moment-head">
           <button class="ghost" data-action="jump" data-ts="${escapeAttr(item.timestamp || 0)}">${formatTs(item.timestamp)}</button>
           <div>
@@ -1514,6 +1548,12 @@ function renderCoachMoments(moments) {
         <p><strong>Better play:</strong> ${escapeHtml(ai.better_play || item.better_play || "")}</p>
         ${ai.drill ? `<p><strong>Drill:</strong> ${escapeHtml(ai.drill)}</p>` : ""}
         <div>${labels}</div>
+        <div class="coach-moment-feedback">
+          ${feedbackText}
+          <input data-field="coach_moment_note" type="text" value="${escapeAttr(feedback.note || "")}" placeholder="Optional note for this tip" />
+          <button class="secondary" data-action="coach-moment-feedback" data-verdict="accepted" data-match="${currentMatchId}" data-moment-id="${escapeAttr(item.moment_id || "")}" data-ts="${escapeAttr(item.timestamp || 0)}" data-label="${escapeAttr(item.label || "")}" data-title="${escapeAttr(item.title || "")}">Useful</button>
+          <button class="danger" data-action="coach-moment-feedback" data-verdict="rejected" data-match="${currentMatchId}" data-moment-id="${escapeAttr(item.moment_id || "")}" data-ts="${escapeAttr(item.timestamp || 0)}" data-label="${escapeAttr(item.label || "")}" data-title="${escapeAttr(item.title || "")}">Not Useful</button>
+        </div>
       </article>
     `;
   }).join("");
@@ -1524,6 +1564,37 @@ function renderCoachMoments(moments) {
       <div class="coach-moment-list">${cards}</div>
     </section>
   `;
+}
+
+function mergeCoachMomentFeedback(moments, feedbackRows) {
+  const feedbackById = {};
+  for (const row of feedbackRows || []) {
+    const payload = row.payload || {};
+    if (payload.moment_id) feedbackById[payload.moment_id] = payload;
+  }
+  return (moments || []).map((moment) => ({
+    ...moment,
+    feedback: feedbackById[moment.moment_id] || moment.feedback,
+  }));
+}
+
+async function saveCoachMomentFeedback(button) {
+  const card = button.closest(".coach-moment-card");
+  const note = card?.querySelector('[data-field="coach_moment_note"]')?.value || "";
+  const matchId = button.dataset.match || currentMatchId;
+  await api(`/api/matches/${matchId}/coach-moment-feedback`, {
+    method: "POST",
+    body: JSON.stringify({
+      moment_id: button.dataset.momentId,
+      timestamp: button.dataset.ts,
+      label: button.dataset.label,
+      title: button.dataset.title,
+      verdict: button.dataset.verdict,
+      note,
+    }),
+  });
+  setStatus(`Coach moment marked ${button.dataset.verdict}.`);
+  await Promise.all([loadReport(matchId), loadCoach()]);
 }
 
 function attachVideoTimelineSync() {
@@ -2127,6 +2198,7 @@ els.automationView.addEventListener("click", (event) => {
   if (action === "delete-playbook") deletePlaybookFromEditor().catch((err) => setStatus(err.message));
   if (action === "apply-correction") applyCorrection(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "use-lmstudio-defaults") useLmStudioDefaults();
+  if (action === "test-local-ai") testLocalAiConfig().catch((err) => setStatus(err.message));
   if (action === "save-local-ai") saveLocalAiConfig().catch((err) => setStatus(err.message));
   if (action === "load-prompt") loadPromptEditor();
   if (action === "save-prompt") savePromptTemplate().catch((err) => setStatus(err.message));
@@ -2182,6 +2254,7 @@ els.reportView.addEventListener("click", (event) => {
   if (action === "preset-label") applyPreset(button);
   if (action === "accept-suggestion") acceptSuggestion(button).catch((err) => setStatus(err.message));
   if (action === "reject-suggestion") rejectSuggestion(button.dataset.id).catch((err) => setStatus(err.message));
+  if (action === "coach-moment-feedback") saveCoachMomentFeedback(button).catch((err) => setStatus(err.message));
   if (action === "benchmark-false-positive") saveBenchmarkLabel({ match_id: button.dataset.match, suggestion_id: button.dataset.id, timestamp: button.dataset.ts, label_type: "false_positive", note: "Marked from suggestion card" }).catch((err) => setStatus(err.message));
   if (action === "benchmark-true-positive") saveBenchmarkLabel({ match_id: button.dataset.match, death_id: button.dataset.id, timestamp: button.dataset.ts, label_type: "true_positive", note: "Marked from death card" }).catch((err) => setStatus(err.message));
   if (action === "benchmark-missed") saveBenchmarkLabel({ match_id: button.dataset.id, timestamp: document.querySelector("#benchmarkMissedTs").value, label_type: "missed_death", note: document.querySelector("#benchmarkNote").value }).catch((err) => setStatus(err.message));
