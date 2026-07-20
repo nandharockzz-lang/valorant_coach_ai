@@ -939,7 +939,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.11.0-local"
+APP_VERSION = "0.11.1-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -950,6 +950,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Reduce Local AI frame payload size so Contact mode fits LM Studio context limits more reliably.",
             "Add Local AI review modes: Context, Contact, and Hybrid frame sampling.",
             "Use a higher-density final 5-second local AI frame sequence to catch fast enemy peeks before death.",
             "Move transient app status messages from the Recordings card into a fixed bottom status bar.",

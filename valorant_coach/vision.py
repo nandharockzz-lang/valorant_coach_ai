@@ -812,6 +812,7 @@ def build_local_ai_review_sequence(
             float(source_info["start"]),
             float(source_info["duration"]),
             int(segment["fps"]),
+            int(segment.get("width") or 576),
         )
         if not frames:
             continue
@@ -850,21 +851,21 @@ def local_ai_sequence_profile(mode: str) -> Dict[str, Any]:
             "id": "context",
             "label": "Context: final 10s at 2 FPS",
             "limit": 24,
-            "segments": [{"label": "context", "start_before": 10.0, "duration": 10.0, "fps": 2}],
+            "segments": [{"label": "context", "start_before": 10.0, "duration": 10.0, "fps": 2, "width": 576}],
         },
         "contact": {
             "id": "contact",
-            "label": "Contact: final 5s at 6 FPS",
-            "limit": 36,
-            "segments": [{"label": "contact", "start_before": 5.0, "duration": 5.0, "fps": 6}],
+            "label": "Contact: final 5s at 5 FPS",
+            "limit": 30,
+            "segments": [{"label": "contact", "start_before": 5.0, "duration": 5.0, "fps": 5, "width": 576}],
         },
         "hybrid": {
             "id": "hybrid",
-            "label": "Hybrid: context 5s at 2 FPS + contact 5s at 6 FPS",
-            "limit": 48,
+            "label": "Hybrid: context 5s at 2 FPS + contact 5s at 5 FPS",
+            "limit": 40,
             "segments": [
-                {"label": "setup-context", "start_before": 10.0, "duration": 5.0, "fps": 2},
-                {"label": "contact", "start_before": 5.0, "duration": 5.0, "fps": 6},
+                {"label": "setup-context", "start_before": 10.0, "duration": 5.0, "fps": 2, "width": 576},
+                {"label": "contact", "start_before": 5.0, "duration": 5.0, "fps": 5, "width": 576},
             ],
         },
     }
@@ -933,7 +934,7 @@ def local_ai_sequence_source(db: Database, death: Dict[str, Any], start_before: 
     return None
 
 
-def extract_sequence_frames(ffmpeg: str, source: Path, frame_dir: Path, start: float, duration: float, fps: int) -> List[Path]:
+def extract_sequence_frames(ffmpeg: str, source: Path, frame_dir: Path, start: float, duration: float, fps: int, width: int = 576) -> List[Path]:
     frame_dir.mkdir(parents=True, exist_ok=True)
     for old in frame_dir.glob("sequence-*.jpg"):
         old.unlink()
@@ -953,7 +954,7 @@ def extract_sequence_frames(ffmpeg: str, source: Path, frame_dir: Path, start: f
         "-t",
         f"{max(0.5, duration):.2f}",
         "-vf",
-        f"fps={fps},scale=640:-1",
+        f"fps={fps},scale={width}:-1",
         "-q:v",
         "5",
         output_pattern,
