@@ -1952,6 +1952,10 @@ function renderLocalAiReview(row) {
   }
   const payload = row.payload;
   const labels = (payload.labels || []).map((label) => `<span class="tag">${escapeHtml(label)}</span>`).join(" ");
+  const evidence = (payload.visible_evidence || payload.evidence || [])
+    .filter(Boolean)
+    .map((item) => `<li>${escapeHtml(item)}</li>`)
+    .join("");
   return `
     <div class="analysis-card">
       <div class="analysis-head">
@@ -1959,9 +1963,11 @@ function renderLocalAiReview(row) {
         <span>${escapeHtml(payload.status || "captured")} · ${Math.round(Number(payload.confidence || 0) * 100)}%</span>
       </div>
       <p>${escapeHtml(payload.summary || "")}</p>
+      ${evidence ? `<p><strong>Visible evidence</strong></p><ul class="compact-list">${evidence}</ul>` : ""}
       ${payload.extracted_text ? `<p><strong>Extracted text:</strong> ${escapeHtml(payload.extracted_text)}</p>` : ""}
       ${payload.scoreboard ? `<p><strong>Scoreboard:</strong> ${escapeHtml(JSON.stringify(payload.scoreboard))}</p>` : ""}
       ${payload.better_play ? `<p><strong>Better play:</strong> ${escapeHtml(payload.better_play)}</p>` : ""}
+      ${payload.drill ? `<p><strong>Drill:</strong> ${escapeHtml(payload.drill)}</p>` : ""}
       <div>${labels}</div>
     </div>
   `;

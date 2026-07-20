@@ -562,14 +562,14 @@ def render_moment_prompt(db: Database, match_id: int, moment: Dict[str, Any]) ->
     profile = db.get_profile()
     return (
         "You are a VALORANT VOD coach reviewing local keyframes from one timestamp. "
-        "Return strict JSON with summary, labels, better_play, drill, confidence. "
+        "Return strict JSON with summary, visible_evidence, labels, better_play, drill, confidence. "
         f"Map: {match.get('map') or 'unknown'}. Agent: {match.get('agent') or 'unknown'}. "
         f"Player rank: {profile.get('rank') or 'unknown'}. Target style: {profile.get('target_style') or 'unknown'}. "
         f"Timestamp seconds: {moment.get('timestamp')}. Detector label: {moment.get('label')}. "
         f"Detector reason: {moment.get('reason')}. Suggested better play: {moment.get('better_play')}. "
         f"Metrics: {json.dumps(moment.get('metrics') or {})}. "
-        "Focus on crosshair placement during turns, angle clearing, movement before contact, minimap timing, and utility/trade discipline. "
-        "Do not invent hidden enemy positions. State uncertainty when the frames are insufficient."
+        "Focus on only what is visible in the provided frames: crosshair placement during turns, angle clearing, movement before contact, minimap timing, and utility/trade discipline. "
+        "Do not invent hidden enemy positions, comms, or prior round context. If the frames are insufficient, say so and keep confidence below 0.45."
     )
 
 
@@ -937,7 +937,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.10.5-local"
+APP_VERSION = "0.10.6-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -948,6 +948,8 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Ground local vision-model reviews with ordered setup, pre-contact, pressure, correction, death, and aftermath keyframes.",
+            "Ask local models to cite visible evidence and avoid confident advice when keyframes are insufficient.",
             "Add local model purpose modes and an olmOCR LM Studio preset for OCR/HUD extraction.",
             "Use stricter local vision-model prompts and JSON parsing for clearer local AI reviews.",
             "Infer unknown death marker rounds from top scoreboard score OCR.",
@@ -1591,15 +1593,32 @@ def keyframe_payload(db: Database, death_id: int) -> List[Dict[str, Any]]:
     latest = db.get_latest_structured_analysis("death", death_id, "keyframes")
     frames = ((latest or {}).get("payload") or {}).get("frames") or []
     encoded = []
-    for item in frames[:4]:
+    for index, item in enumerate(frames[:6], start=1):
         frame_id = str(item.get("frame_id") or "")
         path = find_frame_path(db.path.parent, frame_id)
         payload = {key: item.get(key) for key in ("role", "timestamp", "reason")}
+        payload["index"] = index
+        payload["relative_second"] = item.get("relative_second")
+        payload["caption"] = keyframe_caption(payload)
         payload["frame_id"] = frame_id
         if path and path.exists():
             payload["image_base64"] = base64.b64encode(path.read_bytes()).decode("ascii")
         encoded.append(payload)
     return encoded
+
+
+def keyframe_caption(item: Dict[str, Any]) -> str:
+    role = str(item.get("role") or "frame")
+    ts = item.get("timestamp")
+    rel = item.get("relative_second")
+    pieces = [f"Frame {item.get('index')}: {role}"]
+    if rel is not None:
+        pieces.append(f"relative +{rel}s in the review window")
+    if ts is not None:
+        pieces.append(f"VOD timestamp {ts}s")
+    if item.get("reason"):
+        pieces.append(f"detector note: {item.get('reason')}")
+    return ". ".join(pieces) + "."
 
 
 def find_frame_path(data_dir: Path, frame_id: str) -> Optional[Path]:
@@ -1618,11 +1637,18 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
     key = str(db.get_setting("active_prompt_template", "default") or "default")
     template = templates.get(key) or templates["default"]
     labels = ", ".join(death.get("mistake_labels") or [])
-    return template["prompt"].format(
+    base = template["prompt"].format(
         round=death_round_label(death),
         timestamp=death.get("timestamp") or "?",
         labels=labels or "unlabeled",
         notes=death.get("notes") or "",
+    )
+    return (
+        base
+        + "\n\nYou will receive labeled keyframes from a short window around this marker. "
+        "Use only visible evidence from those frames. Do not assume enemy positions, player intent, comms, utility usage, or the outcome unless visible. "
+        "If the frames do not prove a claim, write 'insufficient visual evidence' and reduce confidence. "
+        "Return strict JSON with keys: summary, visible_evidence, labels, better_play, drill, confidence."
     )
 
 
@@ -1649,13 +1675,18 @@ def run_local_http_review(db: Database, death_id: int, payload: Dict[str, Any], 
     prompt = payload["prompt"]
     if provider == "ollama":
         endpoint = status["base_url"].rstrip("/") + "/api/generate"
-        body = {"model": status["model"], "prompt": local_model_system_prompt(status) + "\n\n" + prompt, "stream": False}
+        manifest = "\n".join(item.get("caption") or "" for item in payload.get("keyframes") or [])
+        body = {"model": status["model"], "prompt": local_model_system_prompt(status) + "\n\n" + prompt + "\n\nKeyframes:\n" + manifest, "stream": False}
         if images:
             body["images"] = images
     else:
         endpoint = status["base_url"].rstrip("/") + "/chat/completions"
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
-        content.extend({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}} for image in images)
+        for item in payload.get("keyframes") or []:
+            caption = item.get("caption") or f"Frame {item.get('index') or ''}".strip()
+            content.append({"type": "text", "text": caption})
+            if item.get("image_base64"):
+                content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{item['image_base64']}"}})
         body = {
             "model": status["model"],
             "messages": [
@@ -1697,8 +1728,10 @@ def parse_model_review(text: str, provider: str) -> Dict[str, Any]:
     result = {
         "kind": "local_ai_review",
         "summary": str(parsed.get("summary") or parsed.get("what_happened") or text[:500]),
+        "visible_evidence": normalize_text_list(parsed.get("visible_evidence") or parsed.get("evidence") or []),
         "labels": normalize_text_list(parsed.get("labels") or parsed.get("suggested_labels") or []),
         "better_play": str(parsed.get("better_play") or parsed.get("recommendation") or ""),
+        "drill": str(parsed.get("drill") or ""),
         "confidence": float(parsed.get("confidence") or 0.55),
         "status": "completed",
         "provider": provider,
@@ -1720,8 +1753,9 @@ def local_model_system_prompt(status: Dict[str, Any]) -> str:
         )
     return (
         "You are a VALORANT VOD coach reviewing local keyframes. "
-        "Return strict compact JSON with summary, labels, better_play, drill, confidence. "
-        "Do not invent hidden enemies, comms, or unseen events. State uncertainty when frames are insufficient."
+        "Return strict compact JSON with summary, visible_evidence, labels, better_play, drill, confidence. "
+        "Use only visible frame evidence. Do not invent hidden enemies, comms, unseen utility, prior context, or player intent. "
+        "If the frames are insufficient, say 'insufficient visual evidence' and set confidence below 0.45."
     )
 
 

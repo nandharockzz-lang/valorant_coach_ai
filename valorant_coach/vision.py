@@ -740,7 +740,8 @@ def build_keyframe_gallery(db: Database, death_id: int, work_dir: Path) -> Dict[
         return {"ok": False, "message": "ffmpeg is required for keyframe extraction.", "analysis": None}
 
     frame_dir = work_dir / "keyframes" / f"death-{death_id}"
-    frames = extract_keyframe_source(ffmpeg, source, frame_dir, death.get("timestamp") if not clip_path else None)
+    source_timestamp = death.get("timestamp") if not clip_path else None
+    frames = extract_keyframe_source(ffmpeg, source, frame_dir, source_timestamp)
     timeline = build_timeline(frames, db.get_calibration())
     selected = select_keyframes(timeline)
     gallery = []
@@ -748,10 +749,15 @@ def build_keyframe_gallery(db: Database, death_id: int, work_dir: Path) -> Dict[
         stem = f"kf-death-{death_id}-{item['role']}"
         target = frame_dir / f"{stem}.jpg"
         shutil.copyfile(item["path"], target)
+        relative_seconds = round(float(item["timestamp"]) / 2.0, 2)
+        actual_timestamp = None
+        if source_timestamp is not None:
+            actual_timestamp = round(max(0.0, float(source_timestamp) - 8.0) + relative_seconds, 2)
         gallery.append(
             {
                 "role": item["role"],
-                "timestamp": item["timestamp"],
+                "timestamp": actual_timestamp if actual_timestamp is not None else relative_seconds,
+                "relative_second": relative_seconds,
                 "frame_id": stem,
                 "metrics": item["metrics"],
                 "reason": item["reason"],
@@ -789,16 +795,34 @@ def extract_keyframe_source(ffmpeg: str, source: Path, frame_dir: Path, timestam
 def select_keyframes(timeline: List[FrameMetrics]) -> List[Dict[str, Any]]:
     if not timeline:
         return []
-    roles = {
-        "pre-contact": min(timeline, key=lambda item: item.pressure_score),
-        "first-pressure": first_above(timeline, "pressure_score", 0.45) or max(timeline, key=lambda item: item.pressure_score),
-        "peak-motion": max(timeline, key=lambda item: item.motion),
-        "death-ui": max(timeline, key=lambda item: item.death_score),
-        "post-death": timeline[-1],
-    }
+
+    death_peak = max(timeline, key=lambda item: item.death_score)
+    pressure_peak = max(timeline, key=lambda item: item.pressure_score)
+    anchor = pressure_peak if pressure_peak.pressure_score >= 0.35 else death_peak
+    anchor_second = frame_second(anchor)
+    death_second = frame_second(death_peak)
+    pressure_threshold = max(0.28, pressure_peak.pressure_score * 0.72)
+
+    roles = [
+        ("setup", nearest_second(timeline, max(0.0, anchor_second - 4.0))),
+        ("pre-contact", nearest_second(timeline, max(0.0, anchor_second - 2.0))),
+        (
+            "first-pressure",
+            first_above_before(timeline, "pressure_score", pressure_threshold, death_peak.timestamp)
+            or nearest_second(timeline, max(0.0, anchor_second - 0.5)),
+        ),
+        ("peak-pressure", pressure_peak),
+        (
+            "crosshair-correction",
+            max(window_around(timeline, anchor_second, before=1.5, after=1.5), key=lambda item: item.crosshair_drift + item.motion),
+        ),
+        ("death-result", death_peak),
+        ("aftermath", nearest_second(timeline, min(frame_second(timeline[-1]), death_second + 1.5))),
+    ]
+
     selected = []
     seen = set()
-    for role, item in roles.items():
+    for role, item in roles:
         if item.path in seen:
             continue
         seen.add(item.path)
@@ -818,6 +842,26 @@ def select_keyframes(timeline: List[FrameMetrics]) -> List[Dict[str, Any]]:
             }
         )
     return selected
+
+
+def frame_second(item: FrameMetrics) -> float:
+    return float(item.timestamp) / 2.0
+
+
+def nearest_second(timeline: List[FrameMetrics], second: float) -> FrameMetrics:
+    return min(timeline, key=lambda item: abs(frame_second(item) - second))
+
+
+def window_around(timeline: List[FrameMetrics], center_second: float, before: float, after: float) -> List[FrameMetrics]:
+    window = [item for item in timeline if center_second - before <= frame_second(item) <= center_second + after]
+    return window or timeline
+
+
+def first_above_before(timeline: List[FrameMetrics], field: str, threshold: float, max_timestamp: float) -> Optional[FrameMetrics]:
+    for item in timeline:
+        if item.timestamp <= max_timestamp and float(getattr(item, field)) >= threshold:
+            return item
+    return None
 
 
 def first_above(timeline: List[FrameMetrics], field: str, threshold: float) -> Optional[FrameMetrics]:
