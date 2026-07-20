@@ -250,10 +250,17 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
         </select>
       </label>
       <label>Model <input id="localAiModel" type="text" value="${escapeAttr(localAi.model || "")}" placeholder="llava" /></label>
+      <label>Purpose
+        <select id="localAiPurpose">
+          <option value="coach" ${localAi.purpose === "coach" ? "selected" : ""}>Gameplay coach</option>
+          <option value="ocr" ${localAi.purpose === "ocr" ? "selected" : ""}>OCR / HUD reader</option>
+        </select>
+      </label>
       <label>Base URL <input id="localAiBaseUrl" type="text" value="${escapeAttr(localAi.base_url || "")}" placeholder="http://127.0.0.1:11434" /></label>
       <label>Custom command <input id="localAiCommand" type="text" value="${escapeAttr(localAi.command || "")}" placeholder="python C:\\path\\review_clip.py" /></label>
       <div class="row">
         <button class="secondary" data-action="use-lmstudio-defaults">Use LM Studio Defaults</button>
+        <button class="secondary" data-action="use-olmocr-defaults">Use olmOCR Defaults</button>
         <button class="secondary" data-action="test-local-ai">Test Local AI</button>
         <button class="secondary" data-action="save-local-ai">Save Local AI</button>
       </div>
@@ -535,6 +542,7 @@ async function applyCorrection(id) {
 async function saveLocalAiConfig() {
   const payload = {
     provider: document.querySelector("#localAiProvider").value,
+    purpose: document.querySelector("#localAiPurpose").value,
     model: document.querySelector("#localAiModel").value,
     base_url: document.querySelector("#localAiBaseUrl").value,
     command: document.querySelector("#localAiCommand").value,
@@ -549,16 +557,33 @@ function useLmStudioDefaults() {
   const model = document.querySelector("#localAiModel");
   const baseUrl = document.querySelector("#localAiBaseUrl");
   const command = document.querySelector("#localAiCommand");
+  const purpose = document.querySelector("#localAiPurpose");
   if (provider) provider.value = "lmstudio";
   if (baseUrl) baseUrl.value = "http://127.0.0.1:1234/v1";
+  if (purpose) purpose.value = "coach";
   if (model && !model.value) model.value = "local-model";
   if (command) command.value = "";
   setStatus("LM Studio defaults filled. If LM Studio shows a specific model ID, paste it into Model before saving.");
 }
 
+function useOlmocrDefaults() {
+  const provider = document.querySelector("#localAiProvider");
+  const model = document.querySelector("#localAiModel");
+  const baseUrl = document.querySelector("#localAiBaseUrl");
+  const command = document.querySelector("#localAiCommand");
+  const purpose = document.querySelector("#localAiPurpose");
+  if (provider) provider.value = "lmstudio";
+  if (baseUrl) baseUrl.value = "http://127.0.0.1:1234/v1";
+  if (purpose) purpose.value = "ocr";
+  if (model) model.value = model.value || "olmocr";
+  if (command) command.value = "";
+  setStatus("olmOCR defaults filled. Paste the exact LM Studio model id if it differs, then Test Local AI and Save.");
+}
+
 async function testLocalAiConfig() {
   const payload = {
     provider: document.querySelector("#localAiProvider").value,
+    purpose: document.querySelector("#localAiPurpose").value,
     model: document.querySelector("#localAiModel").value,
     base_url: document.querySelector("#localAiBaseUrl").value,
     command: document.querySelector("#localAiCommand").value,
@@ -1934,6 +1959,8 @@ function renderLocalAiReview(row) {
         <span>${escapeHtml(payload.status || "captured")} · ${Math.round(Number(payload.confidence || 0) * 100)}%</span>
       </div>
       <p>${escapeHtml(payload.summary || "")}</p>
+      ${payload.extracted_text ? `<p><strong>Extracted text:</strong> ${escapeHtml(payload.extracted_text)}</p>` : ""}
+      ${payload.scoreboard ? `<p><strong>Scoreboard:</strong> ${escapeHtml(JSON.stringify(payload.scoreboard))}</p>` : ""}
       ${payload.better_play ? `<p><strong>Better play:</strong> ${escapeHtml(payload.better_play)}</p>` : ""}
       <div>${labels}</div>
     </div>
@@ -2308,6 +2335,7 @@ els.automationView.addEventListener("click", (event) => {
   if (action === "delete-playbook") deletePlaybookFromEditor().catch((err) => setStatus(err.message));
   if (action === "apply-correction") applyCorrection(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "use-lmstudio-defaults") useLmStudioDefaults();
+  if (action === "use-olmocr-defaults") useOlmocrDefaults();
   if (action === "test-local-ai") testLocalAiConfig().catch((err) => setStatus(err.message));
   if (action === "save-local-ai") saveLocalAiConfig().catch((err) => setStatus(err.message));
   if (action === "load-prompt") loadPromptEditor();

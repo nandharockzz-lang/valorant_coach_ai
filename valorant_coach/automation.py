@@ -522,14 +522,22 @@ def run_local_ai_moment_review(
     db.save_structured_analysis(match_id, "local_model_moment_audit", audit)
     if status["provider"] == "ollama":
         endpoint = status["base_url"].rstrip("/") + "/api/generate"
-        body: Dict[str, Any] = {"model": status["model"], "prompt": prompt, "stream": False}
+        body: Dict[str, Any] = {"model": status["model"], "prompt": local_model_system_prompt(status) + "\n\n" + prompt, "stream": False}
         if images:
             body["images"] = images
     else:
         endpoint = status["base_url"].rstrip("/") + "/chat/completions"
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
         content.extend({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}} for image in images)
-        body = {"model": status["model"], "messages": [{"role": "user", "content": content}], "temperature": 0.2}
+        body = {
+            "model": status["model"],
+            "messages": [
+                {"role": "system", "content": local_model_system_prompt(status)},
+                {"role": "user", "content": content},
+            ],
+            "temperature": 0.1,
+            "max_tokens": 700,
+        }
     try:
         response = post_json(endpoint, body, timeout=120)
         text = response.get("response") or (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or json.dumps(response)
@@ -566,6 +574,7 @@ def render_moment_prompt(db: Database, match_id: int, moment: Dict[str, Any]) ->
 
 
 def parse_moment_review(text: str, provider: str, moment: Dict[str, Any]) -> Dict[str, Any]:
+    text = strip_json_fence(text)
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
@@ -928,7 +937,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.10.4-local"
+APP_VERSION = "0.10.5-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -939,6 +948,8 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Add local model purpose modes and an olmOCR LM Studio preset for OCR/HUD extraction.",
+            "Use stricter local vision-model prompts and JSON parsing for clearer local AI reviews.",
             "Infer unknown death marker rounds from top scoreboard score OCR.",
             "Simplify the match review UI around video, coach priorities, readable suggestions, and compact advice cards.",
             "Shorten generated advice into one diagnosis, one action, and one practice item.",
@@ -1414,11 +1425,13 @@ def local_ai_status(db: Database) -> Dict[str, Any]:
     command = str(db.get_setting("local_ai_command", "") or "").strip()
     base_url = str(db.get_setting("local_ai_base_url", default_base_url(provider)) or "").strip()
     model = str(db.get_setting("local_ai_model", default_model(provider)) or "").strip()
+    purpose = str(db.get_setting("local_ai_purpose", "coach") or "coach").strip()
     enabled = bool(command) if provider == "custom-command" else bool(base_url and model)
     return {
         "enabled": enabled,
         "privacy": "local process only; no network upload by this app",
         "provider": provider,
+        "purpose": purpose,
         "command": command,
         "base_url": base_url,
         "model": model,
@@ -1435,14 +1448,16 @@ def local_ai_status(db: Database) -> Dict[str, Any]:
 
 def save_local_ai_config(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
     provider = str(payload.get("provider") or "custom-command").strip()
+    purpose = str(payload.get("purpose") or "coach").strip()
     command = str(payload.get("command") or "").strip()
     base_url = str(payload.get("base_url") or default_base_url(provider)).strip()
     model = str(payload.get("model") or default_model(provider)).strip()
     db.set_setting("local_ai_provider", provider)
+    db.set_setting("local_ai_purpose", purpose)
     db.set_setting("local_ai_command", command)
     db.set_setting("local_ai_base_url", base_url)
     db.set_setting("local_ai_model", model)
-    db.log("info", "local-ai", "Updated local AI configuration", {"provider": provider, "configured": bool(command or base_url)})
+    db.log("info", "local-ai", "Updated local AI configuration", {"provider": provider, "purpose": purpose, "configured": bool(command or base_url)})
     return {"ok": True, "local_ai": local_ai_status(db)}
 
 
@@ -1452,6 +1467,7 @@ def test_local_ai_connection(db: Database, payload: Optional[Dict[str, Any]] = N
         provider = str(payload.get("provider") or "lmstudio").strip()
         status = {
             "provider": provider,
+            "purpose": str(payload.get("purpose") or "coach").strip(),
             "command": str(payload.get("command") or "").strip(),
             "base_url": str(payload.get("base_url") or default_base_url(provider)).strip(),
             "model": str(payload.get("model") or "").strip(),
@@ -1595,6 +1611,9 @@ def find_frame_path(data_dir: Path, frame_id: str) -> Optional[Path]:
 
 
 def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
+    purpose = str(db.get_setting("local_ai_purpose", "coach") or "coach")
+    if purpose == "ocr":
+        return render_ocr_model_prompt(death)
     templates = prompt_templates(db)["templates"]
     key = str(db.get_setting("active_prompt_template", "default") or "default")
     template = templates.get(key) or templates["default"]
@@ -1604,6 +1623,19 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
         timestamp=death.get("timestamp") or "?",
         labels=labels or "unlabeled",
         notes=death.get("notes") or "",
+    )
+
+
+def render_ocr_model_prompt(death: Dict[str, Any]) -> str:
+    labels = ", ".join(death.get("mistake_labels") or []) or "unlabeled"
+    return (
+        "You are reading VALORANT VOD keyframes as a local OCR/HUD extraction model. "
+        "Focus on visible text and HUD elements only. Do not invent gameplay coaching. "
+        "Return strict JSON with keys: summary, extracted_text, scoreboard, labels, better_play, confidence. "
+        "scoreboard should include left_score, right_score, inferred_round if visible. "
+        f"Marker: {death_round_label(death)} at {death.get('timestamp') or '?'} seconds. "
+        f"Current labels: {labels}. Notes: {death.get('notes') or ''}. "
+        "If text is unreadable, say unreadable and set confidence below 0.4."
     )
 
 
@@ -1617,14 +1649,22 @@ def run_local_http_review(db: Database, death_id: int, payload: Dict[str, Any], 
     prompt = payload["prompt"]
     if provider == "ollama":
         endpoint = status["base_url"].rstrip("/") + "/api/generate"
-        body = {"model": status["model"], "prompt": prompt, "stream": False}
+        body = {"model": status["model"], "prompt": local_model_system_prompt(status) + "\n\n" + prompt, "stream": False}
         if images:
             body["images"] = images
     else:
         endpoint = status["base_url"].rstrip("/") + "/chat/completions"
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
         content.extend({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}} for image in images)
-        body = {"model": status["model"], "messages": [{"role": "user", "content": content}], "temperature": 0.2}
+        body = {
+            "model": status["model"],
+            "messages": [
+                {"role": "system", "content": local_model_system_prompt(status)},
+                {"role": "user", "content": content},
+            ],
+            "temperature": 0.1,
+            "max_tokens": 700,
+        }
     try:
         response = post_json(endpoint, body, timeout=120)
     except Exception as exc:
@@ -1649,11 +1689,12 @@ def get_json(url: str, timeout: int = 60) -> Dict[str, Any]:
 
 
 def parse_model_review(text: str, provider: str) -> Dict[str, Any]:
+    text = strip_json_fence(text)
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         parsed = {"summary": text}
-    return {
+    result = {
         "kind": "local_ai_review",
         "summary": str(parsed.get("summary") or parsed.get("what_happened") or text[:500]),
         "labels": normalize_text_list(parsed.get("labels") or parsed.get("suggested_labels") or []),
@@ -1662,6 +1703,39 @@ def parse_model_review(text: str, provider: str) -> Dict[str, Any]:
         "status": "completed",
         "provider": provider,
     }
+    if parsed.get("extracted_text") is not None:
+        result["extracted_text"] = str(parsed.get("extracted_text") or "")
+    if parsed.get("scoreboard") is not None:
+        result["scoreboard"] = parsed.get("scoreboard")
+    return result
+
+
+def local_model_system_prompt(status: Dict[str, Any]) -> str:
+    purpose = str(status.get("purpose") or "coach")
+    if purpose == "ocr":
+        return (
+            "You are an OCR and HUD extraction model for VALORANT screenshots. "
+            "Only report visible text, scoreboard numbers, round/timer/HUD details, and uncertainty. "
+            "Return strict compact JSON. Do not provide tactical advice unless directly supported by visible HUD text."
+        )
+    return (
+        "You are a VALORANT VOD coach reviewing local keyframes. "
+        "Return strict compact JSON with summary, labels, better_play, drill, confidence. "
+        "Do not invent hidden enemies, comms, or unseen events. State uncertainty when frames are insufficient."
+    )
+
+
+def strip_json_fence(text: str) -> str:
+    value = str(text or "").strip()
+    if value.startswith("```"):
+        value = value.strip("`").strip()
+        if value.lower().startswith("json"):
+            value = value[4:].strip()
+    start = value.find("{")
+    end = value.rfind("}")
+    if start >= 0 and end > start:
+        return value[start : end + 1]
+    return value
 
 
 def redact_model_request(payload: Dict[str, Any], status: Dict[str, Any]) -> Dict[str, Any]:
