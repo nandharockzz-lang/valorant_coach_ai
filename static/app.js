@@ -980,24 +980,31 @@ async function loadMatches() {
         <button class="secondary" data-action="save-match-metadata" data-id="${match.id}">Save Metadata</button>
       </details>
       <div class="match-actions">
-        <button data-action="view" data-id="${match.id}">View</button>
-        <button data-action="pipeline" data-id="${match.id}">Pipeline</button>
-        <button data-action="batch-deaths" data-id="${match.id}">Batch Deaths</button>
-        <button data-action="analyze" data-id="${match.id}">Analyze</button>
-        <button data-action="suggest" data-id="${match.id}">Suggest Deaths</button>
-        <button data-action="events-v2" data-id="${match.id}">Events v2</button>
-        <button data-action="rounds" data-id="${match.id}">Rounds</button>
-        <button data-action="hud" data-id="${match.id}">HUD</button>
-        <button data-action="minimap" data-id="${match.id}">Minimap</button>
-        <button data-action="crosshair" data-id="${match.id}">Crosshair</button>
-        <button data-action="ocr" data-id="${match.id}">OCR</button>
-        <button data-action="review-queue" data-id="${match.id}">Queue</button>
-        <button data-action="review-queue-v2" data-id="${match.id}">Smart Queue</button>
-        <button data-action="story" data-id="${match.id}">Story</button>
-        <button data-action="playbook" data-id="${match.id}">Playbook</button>
-        <button data-action="clips" data-id="${match.id}">Extract Clips</button>
-        <button data-action="review" data-id="${match.id}">Coach Review</button>
-        <button data-action="write" data-id="${match.id}">Write Report</button>
+        <div class="match-primary-actions">
+          <button data-action="view" data-id="${match.id}">Review</button>
+          <button class="secondary" data-action="analyze" data-id="${match.id}">Analyze</button>
+          <button class="secondary" data-action="suggest" data-id="${match.id}">Find Deaths</button>
+          <button class="ghost" data-action="review" data-id="${match.id}">Coach</button>
+        </div>
+        <details class="advanced-actions">
+          <summary>Advanced tools</summary>
+          <div class="row">
+            <button data-action="pipeline" data-id="${match.id}">Full Pipeline</button>
+            <button data-action="batch-deaths" data-id="${match.id}">Batch Deaths</button>
+            <button data-action="events-v2" data-id="${match.id}">Death Detector</button>
+            <button data-action="rounds" data-id="${match.id}">Rounds</button>
+            <button data-action="hud" data-id="${match.id}">HUD</button>
+            <button data-action="minimap" data-id="${match.id}">Minimap</button>
+            <button data-action="crosshair" data-id="${match.id}">Crosshair</button>
+            <button data-action="ocr" data-id="${match.id}">OCR</button>
+            <button data-action="review-queue" data-id="${match.id}">Queue</button>
+            <button data-action="review-queue-v2" data-id="${match.id}">Smart Queue</button>
+            <button data-action="story" data-id="${match.id}">Story</button>
+            <button data-action="playbook" data-id="${match.id}">Playbook</button>
+            <button data-action="clips" data-id="${match.id}">Extract Clips</button>
+            <button data-action="write" data-id="${match.id}">Write Report</button>
+          </div>
+        </details>
       </div>
     `;
     els.matchesList.appendChild(item);
@@ -1183,14 +1190,7 @@ function renderReport(report) {
       <h3>VOD Player</h3>
       <div class="calibration-stage">
         <video id="vodPlayer" controls preload="metadata" src="/api/matches/${match.id}/video"></video>
-        <div id="calibrationOverlay" class="calibration-overlay"></div>
-      </div>
-      <div class="overlay-tools">
-        <label>Overlay region
-          <select id="overlayRegion">${CALIBRATION_REGIONS.map(([key, label]) => `<option value="${escapeAttr(key)}" ${key === selectedCalibrationRegion ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select>
-        </label>
-        <button class="secondary" data-action="toggle-calibration-overlay">Toggle Overlay</button>
-        <button class="secondary" data-action="save-overlay-calibration">Save Overlay</button>
+        <div id="calibrationOverlay" class="calibration-overlay hidden"></div>
       </div>
     </section>
     <section>
@@ -1204,16 +1204,6 @@ function renderReport(report) {
         <button data-action="add-death" data-id="${match.id}">Add Death</button>
       </div>
     </section>
-    <section>
-      <h3>Benchmark Labeling</h3>
-      <div class="add-death">
-        <label>Missed death sec <input id="benchmarkMissedTs" type="number" min="0" step="0.1" placeholder="120.5" /></label>
-        <label class="wide">Note <input id="benchmarkNote" type="text" placeholder="Why the detector missed this death" /></label>
-        <button class="secondary" data-action="benchmark-missed" data-id="${match.id}">Mark Missed Death</button>
-      </div>
-    </section>
-    ${suggestions}
-    ${matchAnalyses}
     ${review}
     <section>
       <h3>Recurring Mistakes</h3>
@@ -1227,8 +1217,30 @@ function renderReport(report) {
       <h3>Death Review</h3>
       <div>${deaths || '<p class="muted">No deaths marked yet.</p>'}</div>
     </section>
+    <details class="advanced-actions">
+      <summary>Advanced match analysis</summary>
+      <section>
+        <h3>Detector Benchmarking</h3>
+        <div class="add-death">
+          <label>Missed death sec <input id="benchmarkMissedTs" type="number" min="0" step="0.1" placeholder="120.5" /></label>
+          <label class="wide">Note <input id="benchmarkNote" type="text" placeholder="Why the detector missed this death" /></label>
+          <button class="secondary" data-action="benchmark-missed" data-id="${match.id}">Mark Missed Death</button>
+        </div>
+      </section>
+      <section>
+        <h3>Calibration Overlay</h3>
+        <div class="overlay-tools">
+          <label>Region
+            <select id="overlayRegion">${CALIBRATION_REGIONS.map(([key, label]) => `<option value="${escapeAttr(key)}" ${key === selectedCalibrationRegion ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select>
+          </label>
+          <button class="secondary" data-action="toggle-calibration-overlay">Show / Hide Overlay</button>
+          <button class="secondary" data-action="save-overlay-calibration">Save Overlay</button>
+        </div>
+      </section>
+      ${suggestions}
+      ${matchAnalyses}
+    </details>
   `;
-  renderCalibrationOverlay();
 }
 
 function renderMatchAnalyses(analyses) {
@@ -1365,53 +1377,60 @@ function renderDeathCard(death) {
   const annotations = renderAnnotations(death.annotations || []);
   return `
     <article class="death-card" data-death-id="${death.id}">
-      <div>
-        <strong>R${death.round_number || "?"} @ ${formatTs(death.timestamp)}</strong>
-        ${renderTags(death.mistake_labels || [])}
+      <div class="death-card-header">
+        <div class="death-card-title">
+          <strong>R${death.round_number || "?"} @ ${formatTs(death.timestamp)}</strong>
+          ${renderTags(death.mistake_labels || [])}
+        </div>
         <button class="secondary" data-action="jump" data-ts="${death.timestamp || 0}">Jump</button>
         <button class="secondary" data-action="advice" data-id="${death.id}">Get Advice</button>
-        <button class="secondary" data-action="vision" data-id="${death.id}">Analyze Clip</button>
-        <button class="secondary" data-action="keyframes" data-id="${death.id}">Keyframes</button>
-        <button class="secondary" data-action="understand" data-id="${death.id}">Understand</button>
-        <button class="secondary" data-action="gameplay" data-id="${death.id}">Gameplay</button>
-        <button class="secondary" data-action="ai-review" data-id="${death.id}">AI Review</button>
         <button class="secondary" data-action="local-ai-review" data-id="${death.id}">Local AI</button>
-        <button class="secondary" data-action="benchmark-true-positive" data-id="${death.id}" data-match="${death.match_id}" data-ts="${death.timestamp || 0}">True Positive</button>
         ${clip}
       </div>
       <p class="muted">${escapeHtml(death.notes || "")}</p>
-      ${vision}
-      ${keyframes}
-      ${understanding}
-      ${localAi}
-      ${annotations}
       ${advice}
-      <div class="death-editor">
-        <label>Round <input data-field="round_number" type="number" min="1" value="${death.round_number || ""}" /></label>
-        <label>Time sec <input data-field="timestamp" type="number" min="0" step="0.1" value="${death.timestamp ?? ""}" /></label>
-        <label>Labels <input data-field="mistake_labels" type="text" value="${escapeAttr(labels)}" /></label>
-        <div class="preset-row wide" data-preset-field="mistake_labels">${renderPresetButtons()}</div>
-        <label>Confidence <input data-field="confidence" type="number" min="0" max="1" step="0.01" value="${death.confidence || 0}" /></label>
-        <label class="wide">Notes <input data-field="notes" type="text" value="${escapeAttr(death.notes || "")}" /></label>
-        <label>Phase <input data-field="round_phase_correction" type="text" value="${escapeAttr(death.round_phase || "")}" /></label>
-        <label class="wide">Correction <input data-field="correction_note" type="text" placeholder="Correct OCR, phase, event type, or keyframe read" /></label>
-        <label>Mistake start <input data-field="annotation_mistake_start" type="number" min="0" step="0.1" placeholder="clip sec" /></label>
-        <label>First contact <input data-field="annotation_first_contact" type="number" min="0" step="0.1" placeholder="clip sec" /></label>
-        <label>Death moment <input data-field="annotation_death_moment" type="number" min="0" step="0.1" placeholder="clip sec" /></label>
-        <div class="wide timeline-actions" data-death-ts="${escapeAttr(death.timestamp || 0)}">
-          <button type="button" class="secondary" data-action="set-annotation-time" data-field="annotation_mistake_start">Set Mistake</button>
-          <button type="button" class="secondary" data-action="set-annotation-time" data-field="annotation_first_contact">Set Contact</button>
-          <button type="button" class="secondary" data-action="set-annotation-time" data-field="annotation_death_moment">Set Death</button>
-          <button type="button" class="secondary" data-action="loop-death" data-ts="${death.timestamp || 0}">Loop 12s</button>
+      <details class="advanced-actions">
+        <summary>Clip analysis and edit tools</summary>
+        <div class="row">
+          <button class="secondary" data-action="vision" data-id="${death.id}">Analyze Clip</button>
+          <button class="secondary" data-action="keyframes" data-id="${death.id}">Keyframes</button>
+          <button class="secondary" data-action="understand" data-id="${death.id}">Understand</button>
+          <button class="secondary" data-action="gameplay" data-id="${death.id}">Gameplay</button>
+          <button class="secondary" data-action="ai-review" data-id="${death.id}">AI Review</button>
+          <button class="secondary" data-action="benchmark-true-positive" data-id="${death.id}" data-match="${death.match_id}" data-ts="${death.timestamp || 0}">True Positive</button>
         </div>
-        <label class="wide">Better decision <input data-field="annotation_better_decision" type="text" placeholder="What should you have done instead?" /></label>
-        <label>Annotation labels <input data-field="annotation_labels" type="text" placeholder="timing, utility, spacing" /></label>
-        <label class="wide">Annotation notes <input data-field="annotation_notes" type="text" placeholder="What should the personal coach learn?" /></label>
-        <button data-action="save-death" data-id="${death.id}">Save</button>
-        <button class="secondary" data-action="save-correction" data-id="${death.id}">Save Correction</button>
-        <button class="secondary" data-action="save-annotation" data-id="${death.id}">Save Annotation</button>
-        <button class="danger" data-action="delete-death" data-id="${death.id}">Delete</button>
-      </div>
+        ${vision}
+        ${keyframes}
+        ${understanding}
+        ${localAi}
+        ${annotations}
+        <div class="death-editor">
+          <label>Round <input data-field="round_number" type="number" min="1" value="${death.round_number || ""}" /></label>
+          <label>Time sec <input data-field="timestamp" type="number" min="0" step="0.1" value="${death.timestamp ?? ""}" /></label>
+          <label>Labels <input data-field="mistake_labels" type="text" value="${escapeAttr(labels)}" /></label>
+          <div class="preset-row wide" data-preset-field="mistake_labels">${renderPresetButtons()}</div>
+          <label>Confidence <input data-field="confidence" type="number" min="0" max="1" step="0.01" value="${death.confidence || 0}" /></label>
+          <label class="wide">Notes <input data-field="notes" type="text" value="${escapeAttr(death.notes || "")}" /></label>
+          <label>Phase <input data-field="round_phase_correction" type="text" value="${escapeAttr(death.round_phase || "")}" /></label>
+          <label class="wide">Correction <input data-field="correction_note" type="text" placeholder="Correct OCR, phase, event type, or keyframe read" /></label>
+          <label>Mistake start <input data-field="annotation_mistake_start" type="number" min="0" step="0.1" placeholder="clip sec" /></label>
+          <label>First contact <input data-field="annotation_first_contact" type="number" min="0" step="0.1" placeholder="clip sec" /></label>
+          <label>Death moment <input data-field="annotation_death_moment" type="number" min="0" step="0.1" placeholder="clip sec" /></label>
+          <div class="wide timeline-actions" data-death-ts="${escapeAttr(death.timestamp || 0)}">
+            <button type="button" class="secondary" data-action="set-annotation-time" data-field="annotation_mistake_start">Set Mistake</button>
+            <button type="button" class="secondary" data-action="set-annotation-time" data-field="annotation_first_contact">Set Contact</button>
+            <button type="button" class="secondary" data-action="set-annotation-time" data-field="annotation_death_moment">Set Death</button>
+            <button type="button" class="secondary" data-action="loop-death" data-ts="${death.timestamp || 0}">Loop 12s</button>
+          </div>
+          <label class="wide">Better decision <input data-field="annotation_better_decision" type="text" placeholder="What should you have done instead?" /></label>
+          <label>Annotation labels <input data-field="annotation_labels" type="text" placeholder="timing, utility, spacing" /></label>
+          <label class="wide">Annotation notes <input data-field="annotation_notes" type="text" placeholder="What should the personal coach learn?" /></label>
+          <button data-action="save-death" data-id="${death.id}">Save</button>
+          <button class="secondary" data-action="save-correction" data-id="${death.id}">Save Correction</button>
+          <button class="secondary" data-action="save-annotation" data-id="${death.id}">Save Annotation</button>
+          <button class="danger" data-action="delete-death" data-id="${death.id}">Delete</button>
+        </div>
+      </details>
     </article>
   `;
 }
@@ -1750,6 +1769,9 @@ function stopCalibrationDrag() {
 function toggleCalibrationOverlay() {
   const overlay = document.querySelector("#calibrationOverlay");
   if (!overlay) return;
+  if (!overlay.children.length) {
+    renderCalibrationOverlay();
+  }
   overlay.classList.toggle("hidden");
 }
 

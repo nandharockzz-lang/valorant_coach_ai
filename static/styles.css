@@ -1,10 +1,10 @@
 :root {
   color-scheme: light;
-  --bg: #f5f2ec;
+  --bg: #f4f6f8;
   --ink: #171717;
-  --muted: #6b625a;
-  --line: #d6d0c6;
-  --panel: #fffdfa;
+  --muted: #65707d;
+  --line: #d9dee6;
+  --panel: #ffffff;
   --red: #d2333f;
   --red-dark: #a8202b;
   --teal: #0e7c75;
@@ -60,9 +60,19 @@ p {
 
 .layout {
   display: grid;
-  grid-template-columns: 300px 340px 280px 320px 340px 340px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-areas:
+    "controls review"
+    "matches review"
+    "coach review"
+    "trends review"
+    "calibration review"
+    "automation review";
+  align-items: start;
+  gap: 14px;
   padding: 18px;
+  max-width: 1500px;
+  margin: 0 auto;
 }
 
 .panel {
@@ -71,6 +81,43 @@ p {
   border-radius: 8px;
   padding: 16px;
   min-height: 160px;
+}
+
+.controls {
+  grid-area: controls;
+}
+
+.matches {
+  grid-area: matches;
+}
+
+.report {
+  grid-area: review;
+  min-height: calc(100vh - 128px);
+}
+
+.coach {
+  grid-area: coach;
+}
+
+.trends {
+  grid-area: trends;
+}
+
+.calibration {
+  grid-area: calibration;
+  min-height: 0;
+}
+
+.automation {
+  grid-area: automation;
+  min-height: 0;
+}
+
+details > summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--ink);
 }
 
 label {
@@ -122,6 +169,7 @@ button:hover {
 
 .row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 16px;
 }
@@ -162,14 +210,27 @@ button:hover {
   gap: 8px;
 }
 
+.match-actions > details {
+  width: 100%;
+}
+
 .match-actions button {
   padding: 7px 9px;
   font-size: 12px;
 }
 
+.match-primary-actions button {
+  padding: 8px 10px;
+}
+
 .report-view {
   display: grid;
   gap: 16px;
+}
+
+.report-view > section,
+.report-view > details {
+  min-width: 0;
 }
 
 .player-wrap {
@@ -179,7 +240,7 @@ button:hover {
 
 video {
   width: 100%;
-  max-height: 380px;
+  max-height: min(64vh, 720px);
   background: #111;
   border-radius: 8px;
 }
@@ -260,6 +321,36 @@ video {
   padding: 12px;
   background: #fff;
   margin-bottom: 10px;
+}
+
+.death-card-header,
+.review-toolbar,
+.match-primary-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.death-card-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-right: auto;
+}
+
+.advanced-actions {
+  margin-top: 10px;
+}
+
+.advanced-actions summary {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.advanced-actions .row {
+  margin: 10px 0 0;
 }
 
 .death-editor {
@@ -638,6 +729,16 @@ video {
   background: var(--teal);
 }
 
+.ghost {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
+.ghost:hover {
+  background: #eef3f5;
+}
+
 .compact-list {
   margin: 0;
   padding-left: 18px;
@@ -785,6 +886,14 @@ video {
 @media (max-width: 1100px) {
   .layout {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "controls"
+      "matches"
+      "review"
+      "coach"
+      "trends"
+      "calibration"
+      "automation";
   }
 
   .summary-grid {

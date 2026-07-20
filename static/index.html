@@ -39,21 +39,11 @@
         <div id="matchesList" class="matches-list"></div>
       </section>
 
-      <section class="panel trends">
-        <h2>Trends</h2>
-        <div id="trendsView" class="trends-view"></div>
-      </section>
-
-      <section class="panel calibration">
-        <h2>Calibration</h2>
-        <div id="capabilitiesView" class="capabilities-view"></div>
-        <div id="calibrationView" class="calibration-view"></div>
-        <button id="saveCalibrationBtn" class="secondary">Save Calibration</button>
-      </section>
-
-      <section class="panel automation">
-        <h2>Automation</h2>
-        <div id="automationView" class="automation-view"></div>
+      <section class="panel report">
+        <h2>Review</h2>
+        <div id="reportView" class="report-view">
+          <p class="muted">Select a match and click Review.</p>
+        </div>
       </section>
 
       <section class="panel coach">
@@ -61,11 +51,25 @@
         <div id="coachView" class="coach-view"></div>
       </section>
 
-      <section class="panel report">
-        <h2>Report</h2>
-        <div id="reportView" class="report-view">
-          <p class="muted">Select a match to view its report.</p>
-        </div>
+      <section class="panel trends">
+        <h2>Trends</h2>
+        <div id="trendsView" class="trends-view"></div>
+      </section>
+
+      <section class="panel calibration">
+        <details>
+          <summary>Advanced: Calibration</summary>
+          <div id="capabilitiesView" class="capabilities-view"></div>
+          <div id="calibrationView" class="calibration-view"></div>
+          <button id="saveCalibrationBtn" class="secondary">Save Calibration</button>
+        </details>
+      </section>
+
+      <section class="panel automation">
+        <details>
+          <summary>Advanced: Automation And Tools</summary>
+          <div id="automationView" class="automation-view"></div>
+        </details>
       </section>
     </main>
 
