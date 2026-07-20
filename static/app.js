@@ -294,6 +294,16 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
           <option value="context" ${localAi.review_mode === "context" ? "selected" : ""}>Context: final 10s at 2 FPS</option>
         </select>
       </label>
+      <label>FPS override
+        <input id="localAiReviewFps" type="number" min="1" max="20" step="1" value="${escapeAttr(localAi.review_fps || "")}" placeholder="mode default" />
+      </label>
+      <div class="row compact-actions">
+        <button class="secondary" data-action="set-local-ai-fps" data-fps="">Mode Default</button>
+        <button class="secondary" data-action="set-local-ai-fps" data-fps="8">8 FPS</button>
+        <button class="secondary" data-action="set-local-ai-fps" data-fps="12">12 FPS</button>
+        <button class="secondary" data-action="set-local-ai-fps" data-fps="15">15 FPS</button>
+      </div>
+      <p class="muted">Active sequence: ${escapeHtml(localAi.review_mode_label || "")} · frame cap ${escapeHtml(localAi.review_frame_limit || "default")}</p>
       <label>Base URL <input id="localAiBaseUrl" type="text" value="${escapeAttr(localAi.base_url || "")}" placeholder="http://127.0.0.1:11434" /></label>
       <label>Custom command <input id="localAiCommand" type="text" value="${escapeAttr(localAi.command || "")}" placeholder="python C:\\path\\review_clip.py" /></label>
       <div class="row">
@@ -582,6 +592,7 @@ async function saveLocalAiConfig() {
     provider: document.querySelector("#localAiProvider").value,
     purpose: document.querySelector("#localAiPurpose").value,
     review_mode: document.querySelector("#localAiReviewMode").value,
+    review_fps: document.querySelector("#localAiReviewFps").value,
     model: document.querySelector("#localAiModel").value,
     base_url: document.querySelector("#localAiBaseUrl").value,
     command: document.querySelector("#localAiCommand").value,
@@ -598,10 +609,12 @@ function useLmStudioDefaults() {
   const command = document.querySelector("#localAiCommand");
   const purpose = document.querySelector("#localAiPurpose");
   const reviewMode = document.querySelector("#localAiReviewMode");
+  const reviewFps = document.querySelector("#localAiReviewFps");
   if (provider) provider.value = "lmstudio";
   if (baseUrl) baseUrl.value = "http://127.0.0.1:1234/v1";
   if (purpose) purpose.value = "coach";
   if (reviewMode) reviewMode.value = "contact";
+  if (reviewFps) reviewFps.value = "";
   if (model && !model.value) model.value = "local-model";
   if (command) command.value = "";
   setStatus("LM Studio defaults filled. If LM Studio shows a specific model ID, paste it into Model before saving.");
@@ -614,13 +627,22 @@ function useOlmocrDefaults() {
   const command = document.querySelector("#localAiCommand");
   const purpose = document.querySelector("#localAiPurpose");
   const reviewMode = document.querySelector("#localAiReviewMode");
+  const reviewFps = document.querySelector("#localAiReviewFps");
   if (provider) provider.value = "lmstudio";
   if (baseUrl) baseUrl.value = "http://127.0.0.1:1234/v1";
   if (purpose) purpose.value = "ocr";
   if (reviewMode) reviewMode.value = "context";
+  if (reviewFps) reviewFps.value = "";
   if (model) model.value = model.value || "olmocr";
   if (command) command.value = "";
   setStatus("olmOCR defaults filled. Paste the exact LM Studio model id if it differs, then Test Local AI and Save.");
+}
+
+function setLocalAiFps(value) {
+  const input = document.querySelector("#localAiReviewFps");
+  if (!input) return;
+  input.value = value || "";
+  setStatus(value ? `Local AI FPS override set to ${value}. Save Local AI to apply.` : "Local AI FPS override cleared. Save Local AI to apply.");
 }
 
 async function testLocalAiConfig() {
@@ -628,6 +650,7 @@ async function testLocalAiConfig() {
     provider: document.querySelector("#localAiProvider").value,
     purpose: document.querySelector("#localAiPurpose").value,
     review_mode: document.querySelector("#localAiReviewMode").value,
+    review_fps: document.querySelector("#localAiReviewFps").value,
     model: document.querySelector("#localAiModel").value,
     base_url: document.querySelector("#localAiBaseUrl").value,
     command: document.querySelector("#localAiCommand").value,
@@ -666,6 +689,7 @@ async function saveSetupWizard() {
       local_ai_base_url: document.querySelector("#localAiBaseUrl")?.value || "",
       local_ai_command: document.querySelector("#localAiCommand")?.value || "",
       local_ai_review_mode: document.querySelector("#localAiReviewMode")?.value || "contact",
+      local_ai_review_fps: document.querySelector("#localAiReviewFps")?.value || "",
     }),
   });
   els.recordingDir.value = document.querySelector("#setupRecordingDir").value;
@@ -2393,6 +2417,7 @@ els.automationView.addEventListener("click", (event) => {
   if (action === "apply-correction") applyCorrection(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "use-lmstudio-defaults") useLmStudioDefaults();
   if (action === "use-olmocr-defaults") useOlmocrDefaults();
+  if (action === "set-local-ai-fps") setLocalAiFps(button.dataset.fps);
   if (action === "test-local-ai") testLocalAiConfig().catch((err) => setStatus(err.message));
   if (action === "save-local-ai") saveLocalAiConfig().catch((err) => setStatus(err.message));
   if (action === "load-prompt") loadPromptEditor();

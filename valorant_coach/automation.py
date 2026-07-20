@@ -939,7 +939,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.11.3-local"
+APP_VERSION = "0.11.4-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -950,6 +950,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Add runtime Local AI FPS override controls with quick FPS presets.",
             "Add batched Local AI clip review and Burst mode for more frames without one oversized model request.",
             "Upgrade the bottom status bar into a compact action pill with busy spinner and job progress percent.",
             "Reduce Local AI frame payload size so Contact mode fits LM Studio context limits more reliably.",
@@ -1438,7 +1439,8 @@ def local_ai_status(db: Database) -> Dict[str, Any]:
     model = str(db.get_setting("local_ai_model", default_model(provider)) or "").strip()
     purpose = str(db.get_setting("local_ai_purpose", "coach") or "coach").strip()
     review_mode = str(db.get_setting("local_ai_review_mode", "contact") or "contact").strip()
-    sequence_profile = local_ai_sequence_profile(review_mode)
+    review_fps = str(db.get_setting("local_ai_review_fps", "") or "").strip()
+    sequence_profile = local_ai_sequence_profile(review_mode, review_fps)
     enabled = bool(command) if provider == "custom-command" else bool(base_url and model)
     return {
         "enabled": enabled,
@@ -1450,6 +1452,8 @@ def local_ai_status(db: Database) -> Dict[str, Any]:
         "model": model,
         "review_mode": sequence_profile["id"],
         "review_mode_label": sequence_profile["label"],
+        "review_fps": review_fps,
+        "review_frame_limit": sequence_profile["limit"],
         "status": "configured" if enabled else "disabled",
         "expected_protocol": "custom command uses stdin JSON/stdout JSON; HTTP providers use local-only JSON requests",
         "providers": [
@@ -1467,15 +1471,29 @@ def save_local_ai_config(db: Database, payload: Dict[str, Any]) -> Dict[str, Any
     command = str(payload.get("command") or "").strip()
     base_url = str(payload.get("base_url") or default_base_url(provider)).strip()
     model = str(payload.get("model") or default_model(provider)).strip()
-    review_mode = local_ai_sequence_profile(str(payload.get("review_mode") or "contact"))["id"]
+    review_fps = normalize_review_fps_setting(payload.get("review_fps"))
+    review_mode = local_ai_sequence_profile(str(payload.get("review_mode") or "contact"), review_fps)["id"]
     db.set_setting("local_ai_provider", provider)
     db.set_setting("local_ai_purpose", purpose)
     db.set_setting("local_ai_command", command)
     db.set_setting("local_ai_base_url", base_url)
     db.set_setting("local_ai_model", model)
     db.set_setting("local_ai_review_mode", review_mode)
-    db.log("info", "local-ai", "Updated local AI configuration", {"provider": provider, "purpose": purpose, "review_mode": review_mode, "configured": bool(command or base_url)})
+    db.set_setting("local_ai_review_fps", review_fps)
+    db.log("info", "local-ai", "Updated local AI configuration", {"provider": provider, "purpose": purpose, "review_mode": review_mode, "review_fps": review_fps, "configured": bool(command or base_url)})
     return {"ok": True, "local_ai": local_ai_status(db)}
+
+
+def normalize_review_fps_setting(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return ""
+    if number <= 0:
+        return ""
+    return str(max(1, min(20, number)))
 
 
 def test_local_ai_connection(db: Database, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1485,7 +1503,8 @@ def test_local_ai_connection(db: Database, payload: Optional[Dict[str, Any]] = N
         status = {
             "provider": provider,
             "purpose": str(payload.get("purpose") or "coach").strip(),
-            "review_mode": local_ai_sequence_profile(str(payload.get("review_mode") or "contact"))["id"],
+            "review_mode": local_ai_sequence_profile(str(payload.get("review_mode") or "contact"), payload.get("review_fps"))["id"],
+            "review_fps": normalize_review_fps_setting(payload.get("review_fps")),
             "command": str(payload.get("command") or "").strip(),
             "base_url": str(payload.get("base_url") or default_base_url(provider)).strip(),
             "model": str(payload.get("model") or "").strip(),
@@ -1548,8 +1567,8 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
         }
         db.save_death_analysis(death_id, "local_ai_review", result)
         return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
-    sequence_profile = local_ai_sequence_profile(str(status.get("review_mode") or "contact"))
-    sequence = build_local_ai_review_sequence(db, death_id, db.path.parent / "vision", mode=sequence_profile["id"])
+    sequence_profile = local_ai_sequence_profile(str(status.get("review_mode") or "contact"), status.get("review_fps"))
+    sequence = build_local_ai_review_sequence(db, death_id, db.path.parent / "vision", mode=sequence_profile["id"], fps_override=status.get("review_fps"))
     if not sequence.get("ok"):
         return {"ok": False, "message": sequence.get("message") or "Could not prepare local AI review sequence.", "status": status}
     request = {
@@ -1660,7 +1679,10 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
     templates = prompt_templates(db)["templates"]
     key = str(db.get_setting("active_prompt_template", "default") or "default")
     template = templates.get(key) or templates["default"]
-    sequence_profile = local_ai_sequence_profile(str(db.get_setting("local_ai_review_mode", "contact") or "contact"))
+    sequence_profile = local_ai_sequence_profile(
+        str(db.get_setting("local_ai_review_mode", "contact") or "contact"),
+        db.get_setting("local_ai_review_fps", ""),
+    )
     labels = ", ".join(death.get("mistake_labels") or [])
     base = template["prompt"].format(
         round=death_round_label(death),
@@ -2113,7 +2135,7 @@ def save_setup_wizard(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("recording_dir", "auto_import", "auto_analysis", "frame_sample_rate", "detector_sensitivity"):
         if key in payload:
             db.set_setting(key, str(payload.get(key) or ""))
-    if any(key in payload for key in ("local_ai_provider", "local_ai_command", "local_ai_base_url", "local_ai_model", "local_ai_review_mode")):
+    if any(key in payload for key in ("local_ai_provider", "local_ai_command", "local_ai_base_url", "local_ai_model", "local_ai_review_mode", "local_ai_review_fps")):
         save_local_ai_config(
             db,
             {
@@ -2122,6 +2144,7 @@ def save_setup_wizard(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "base_url": payload.get("local_ai_base_url"),
                 "model": payload.get("local_ai_model"),
                 "review_mode": payload.get("local_ai_review_mode"),
+                "review_fps": payload.get("local_ai_review_fps"),
             },
         )
     db.set_setting("setup_completed", "true")
