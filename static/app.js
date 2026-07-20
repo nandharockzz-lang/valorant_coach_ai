@@ -1284,39 +1284,42 @@ async function loadTrends() {
 
   els.trendsView.innerHTML = `
     <section class="player-status-report compact-status-report">
-      <div class="status-metric-grid">
-        <article class="status-metric">
-          <span>Matches Parsed</span>
-          <strong>${matchCount}</strong>
-          <p>${deathCount} marked death(s)</p>
-        </article>
-        <article class="status-metric">
-          <span>Avg Death Load</span>
-          <strong>${avgDeaths}</strong>
-          <p>marked deaths per match</p>
-        </article>
-        <article class="status-metric">
-          <span>Top Mistake</span>
-          <strong>${escapeHtml(titleCase(topMistake?.[0] || "none"))}</strong>
-          <p>${topMistake ? `${topMistake[1]} occurrence(s)` : "Save labels to build this."}</p>
-        </article>
-        <article class="status-metric">
-          <span>Worst Map</span>
-          <strong>${escapeHtml(topMap?.[0] || "none")}</strong>
-          <p>${topMap ? `${topMap[1]} death marker(s)` : "No map data yet."}</p>
-        </article>
-      </div>
+      <details class="fold-panel" open>
+        <summary>Overview</summary>
+        <div class="status-metric-grid">
+          <article class="status-metric">
+            <span>Matches Parsed</span>
+            <strong>${matchCount}</strong>
+            <p>${deathCount} marked death(s)</p>
+          </article>
+          <article class="status-metric">
+            <span>Avg Death Load</span>
+            <strong>${avgDeaths}</strong>
+            <p>marked deaths per match</p>
+          </article>
+          <article class="status-metric">
+            <span>Top Mistake</span>
+            <strong>${escapeHtml(titleCase(topMistake?.[0] || "none"))}</strong>
+            <p>${topMistake ? `${topMistake[1]} occurrence(s)` : "Save labels to build this."}</p>
+          </article>
+          <article class="status-metric">
+            <span>Worst Map</span>
+            <strong>${escapeHtml(topMap?.[0] || "none")}</strong>
+            <p>${topMap ? `${topMap[1]} death marker(s)` : "No map data yet."}</p>
+          </article>
+        </div>
+      </details>
       <div class="player-graph-grid">
-        ${renderStatusPanel("Mistakes Across All Matches", trends.labels || {}, Math.max(1, deathCount), "No labeled mistakes yet.")}
-        ${renderStatusPanel("Deaths By Map", trends.by_map || {}, Math.max(1, deathCount), "No map data yet.")}
-        ${renderStatusPanel("Deaths By Agent", trends.by_agent || {}, Math.max(1, deathCount), "No agent data yet.")}
-        <article class="status-panel">
-          <div class="analysis-head">
-            <strong>Recent Match Reads</strong>
+        ${renderFoldableStatusPanel("Mistakes Across All Matches", trends.labels || {}, Math.max(1, deathCount), "No labeled mistakes yet.", true)}
+        ${renderFoldableStatusPanel("Deaths By Map", trends.by_map || {}, Math.max(1, deathCount), "No map data yet.")}
+        ${renderFoldableStatusPanel("Deaths By Agent", trends.by_agent || {}, Math.max(1, deathCount), "No agent data yet.")}
+        <details class="status-panel fold-panel">
+          <summary>
+            <span>Recent Match Reads</span>
             <span>${matches.slice(0, 6).length}</span>
-          </div>
+          </summary>
           <ul class="compact-list">${recent || "<li>No matches yet.</li>"}</ul>
-        </article>
+        </details>
       </div>
     </section>
   `;
@@ -1354,19 +1357,20 @@ function renderCoach(coach) {
     `;
 
   els.coachView.innerHTML = `
-    <div class="coach-plan">
-      <h3>Session</h3>
+    <details class="coach-plan fold-panel" open>
+      <summary>Session</summary>
       ${renderSessionBlock(sessions)}
-    </div>
-    <div class="coach-profile">
+    </details>
+    <details class="coach-profile fold-panel">
+      <summary>Profile</summary>
       <label>Rank <input id="coachRank" type="text" value="${escapeAttr(profile.rank || "")}" placeholder="Gold 2" /></label>
       <label>Main agents <input id="coachAgents" type="text" value="${escapeAttr(agents)}" placeholder="Jett, Omen" /></label>
       <label>Target style <input id="coachStyle" type="text" value="${escapeAttr(profile.target_style || "")}" placeholder="More disciplined entry fights" /></label>
       <label>Coach notes <input id="coachNotes" type="text" value="${escapeAttr(profile.notes || "")}" placeholder="What should the coach remember?" /></label>
       <button data-action="save-profile">Save Profile</button>
-    </div>
-    <div class="coach-plan">
-      <h3 id="suggestedFocus" data-focus="${escapeAttr(plan.focus_label || "")}">${escapeHtml(plan.summary || "No plan yet")}</h3>
+    </details>
+    <details class="coach-plan fold-panel" open>
+      <summary id="suggestedFocus" data-focus="${escapeAttr(plan.focus_label || "")}">${escapeHtml(plan.summary || "Suggested Focus")}</summary>
       <p id="suggestedSummary">${escapeHtml(plan.why || "")}</p>
       <p class="muted">${escapeHtml(plan.profile_context || "")}</p>
       <ul class="compact-list">
@@ -1384,32 +1388,32 @@ function renderCoach(coach) {
         <span>${learning.rejected || 0} suggestions rejected</span>
       </div>
       ${goalBlock}
-    </div>
-    <div class="coach-plan">
-      <h3>Personal Coach v2</h3>
+    </details>
+    <details class="coach-plan fold-panel">
+      <summary>Personal Coach v2</summary>
       <p>${escapeHtml(weekly.target || "No weekly target yet.")}</p>
       <div class="bar-chart">${renderSkillBars(coachV2.skill_scores || {})}</div>
       <ul class="compact-list">
         ${(weekly.drills || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
       </ul>
       <p class="muted">Memory strength ${escapeHtml(coachV2.memory_strength || 0)} · primary focus ${escapeHtml(weekly.primary_focus || "none")}</p>
-    </div>
-    <div class="coach-plan">
-      <h3>Weighted Patterns</h3>
+    </details>
+    <details class="coach-plan fold-panel">
+      <summary>Weighted Patterns</summary>
       <ul class="compact-list">
         ${(coachV2.weighted_profile || []).slice(0, 6).map((item) => `<li>${escapeHtml(item.label)}: ${escapeHtml(item.weight)}</li>`).join("") || "<li>No weighted patterns yet.</li>"}
       </ul>
-    </div>
-    <div class="coach-plan">
-      <h3>Personal Coach Memory</h3>
+    </details>
+    <details class="coach-plan fold-panel">
+      <summary>Personal Coach Memory</summary>
       <p>${escapeHtml(memory.summary || "No learned memory yet.")}</p>
       <ul class="compact-list">
         ${(memory.priorities || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
       </ul>
       <p class="muted">${Number(memory.analysis_count || 0)} saved analysis read(s), ${Number(memory.recent_clip_reads || 0)} recent clip read(s).</p>
-    </div>
-    <div class="coach-plan">
-      <h3>Measured Outcomes</h3>
+    </details>
+    <details class="coach-plan fold-panel">
+      <summary>Measured Outcomes</summary>
       <p>${escapeHtml(outcomes.summary || "No measured outcomes yet.")}</p>
       <div class="coach-progress">
         <span>Focus: ${escapeHtml(outcomes.focus_label || "none")}</span>
@@ -1417,7 +1421,7 @@ function renderCoach(coach) {
         <span>Detector accepted: ${escapeHtml((outcomes.detector_feedback || {}).accepted || 0)}</span>
         <span>Detector rejected: ${escapeHtml((outcomes.detector_feedback || {}).rejected || 0)}</span>
       </div>
-    </div>
+    </details>
   `;
 }
 
@@ -1671,6 +1675,19 @@ function renderStatusPanel(title, counts, total, emptyText) {
       </div>
       ${bars || `<p class="muted">${escapeHtml(emptyText)}</p>`}
     </article>
+  `;
+}
+
+function renderFoldableStatusPanel(title, counts, total, emptyText, open = false) {
+  const bars = renderStatusBars(counts, total);
+  return `
+    <details class="status-panel fold-panel" ${open ? "open" : ""}>
+      <summary>
+        <span>${escapeHtml(title)}</span>
+        <strong>${Object.keys(counts || {}).length}</strong>
+      </summary>
+      ${bars || `<p class="muted">${escapeHtml(emptyText)}</p>`}
+    </details>
   `;
 }
 
@@ -2105,13 +2122,13 @@ function renderGuidedCoach(row, matchId) {
   const coach = (row && row.payload) || row || null;
   if (!coach) {
     return `
-      <section class="guided-coach empty">
+      <details class="guided-coach empty fold-panel">
+        <summary>Coach Mode</summary>
         <div>
-          <h3>Coach Mode</h3>
           <p class="muted">Generate a short review order after markers are confirmed.</p>
         </div>
         <button data-action="guided-coach" data-id="${matchId}">Coach This Match</button>
-      </section>
+      </details>
     `;
   }
   const items = (coach.review_order || []).map((item) => `
@@ -2127,11 +2144,11 @@ function renderGuidedCoach(row, matchId) {
   `).join("");
   const homework = (coach.homework || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   return `
-    <section class="guided-coach">
-      <div class="review-head">
-        <h3>Coach Mode</h3>
+    <details class="guided-coach fold-panel">
+      <summary>
+        <span>Coach Mode</span>
         <strong>${Math.round(Number(coach.confidence || 0) * 100)}%</strong>
-      </div>
+      </summary>
       <p>${escapeHtml(coach.summary || "")}</p>
       ${coach.coach_read ? `<p><strong>Read:</strong> ${escapeHtml(coach.coach_read)}</p>` : ""}
       ${coach.between_round_rule ? `<p><strong>Round rule:</strong> ${escapeHtml(coach.between_round_rule)}</p>` : ""}
@@ -2141,7 +2158,7 @@ function renderGuidedCoach(row, matchId) {
         <ul class="compact-list">${homework}</ul>
       </details>
       <button class="secondary" data-action="guided-coach" data-id="${matchId}">Refresh Coach Read</button>
-    </section>
+    </details>
   `;
 }
 
@@ -2543,6 +2560,8 @@ async function deleteDeath(id) {
 function jumpTo(ts) {
   const player = document.querySelector("#vodPlayer");
   if (!player) return;
+  player.scrollIntoView({ behavior: "smooth", block: "center" });
+  player.focus({ preventScroll: true });
   player.currentTime = Math.max(0, Number(ts) - 5);
   player.play().catch(() => {});
 }

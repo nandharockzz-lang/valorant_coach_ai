@@ -141,6 +141,39 @@ details > summary {
   color: var(--ink);
 }
 
+.fold-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.fold-panel > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+  list-style: none;
+}
+
+.fold-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold-panel > summary::after {
+  content: "Expand";
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.fold-panel[open] > summary::after {
+  content: "Collapse";
+}
+
 label {
   display: grid;
   gap: 7px;
@@ -389,6 +422,15 @@ button:hover {
   color: #dce5f2;
   font-size: 12px;
   line-height: 1.4;
+}
+
+.status-panel.fold-panel > summary {
+  color: #fff;
+}
+
+.status-panel.fold-panel > summary strong {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .status-bars {
@@ -1020,6 +1062,14 @@ video {
 .coach-goal {
   display: grid;
   gap: 10px;
+}
+
+.coach-profile.fold-panel,
+.coach-plan.fold-panel {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
 }
 
 .coach-profile label {

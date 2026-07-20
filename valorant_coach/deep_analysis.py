@@ -126,24 +126,22 @@ def infer_rounds_from_scoreboard(db: Database, match_id: int, work_dir: Path) ->
     deaths = [
         death
         for death in db.get_deaths(match_id)
-        if death.get("timestamp") is not None and not death.get("round_number")
+        if death.get("timestamp") is not None
     ]
     frame_dir = work_dir / "scoreboard-rounds" / f"match-{match_id}"
     frame_dir.mkdir(parents=True, exist_ok=True)
     results = []
     updated = 0
     for death in deaths:
-        timestamp = max(0.0, float(death["timestamp"]) - 2.0)
-        frame_path = frame_dir / f"death-{int(death['id'])}.jpg"
-        extracted = extract_single_frame(ffmpeg, video_path, timestamp, frame_path)
-        if not extracted:
-            results.append({"death_id": death["id"], "timestamp": death["timestamp"], "status": "frame_failed"})
-            continue
-        read = read_scoreboard_round(tesseract, frame_path, frame_dir, int(death["id"]))
-        if read.get("round_number"):
+        read = read_scoreboard_round_consensus(tesseract, ffmpeg, video_path, frame_dir, death)
+        existing_round = int(death.get("round_number") or 0)
+        read_round = int(read.get("round_number") or 0)
+        can_update_missing = read_round and not existing_round
+        can_correct_existing = read_round and existing_round and existing_round != read_round and read.get("overwrite_safe")
+        if can_update_missing or can_correct_existing:
             db.update_death_round_number(int(death["id"]), int(read["round_number"]))
             updated += 1
-        results.append({"death_id": death["id"], "timestamp": death["timestamp"], **read})
+        results.append({"death_id": death["id"], "timestamp": death["timestamp"], "existing_round_number": existing_round or None, **read})
 
     analysis = {
         "kind": "scoreboard_rounds",
@@ -328,7 +326,7 @@ def extract_single_frame(ffmpeg: str, video_path: Path, timestamp: float, output
         "-frames:v",
         "1",
         "-vf",
-        "scale=960:-1",
+        "scale=1280:-1",
         "-q:v",
         "3",
         str(output_path),
@@ -337,18 +335,74 @@ def extract_single_frame(ffmpeg: str, video_path: Path, timestamp: float, output
     return result.returncode == 0 and output_path.exists()
 
 
-def read_scoreboard_round(tesseract: str, frame_path: Path, work_dir: Path, death_id: int) -> Dict[str, Any]:
+def read_scoreboard_round_consensus(
+    tesseract: str,
+    ffmpeg: str,
+    video_path: Path,
+    work_dir: Path,
+    death: Dict[str, Any],
+) -> Dict[str, Any]:
+    death_id = int(death["id"])
+    death_ts = float(death["timestamp"])
+    offsets = (-8.0, -5.0, -2.0, 0.0, 2.0)
+    reads = []
+    for offset in offsets:
+        timestamp = max(0.0, death_ts + offset)
+        frame_path = work_dir / f"death-{death_id}-{int(offset * 10):+04d}.jpg"
+        extracted = extract_single_frame(ffmpeg, video_path, timestamp, frame_path)
+        if not extracted:
+            reads.append({"sample_ts": timestamp, "status": "frame_failed"})
+            continue
+        read = read_scoreboard_round(tesseract, frame_path, work_dir, death_id, sample_tag=f"{int(offset * 10):+04d}")
+        reads.append({"sample_ts": timestamp, **read})
+
+    candidates: Dict[int, List[Dict[str, Any]]] = {}
+    for read in reads:
+        round_number = read.get("round_number")
+        if round_number:
+            candidates.setdefault(int(round_number), []).append(read)
+
+    if not candidates:
+        return {
+            "status": "unreadable_consensus",
+            "round_number": None,
+            "confidence": 0.0,
+            "samples": reads,
+        }
+
+    round_number, winning_reads = max(candidates.items(), key=lambda item: (len(item[1]), sum(float(row.get("confidence") or 0) for row in item[1])))
+    support = len(winning_reads)
+    avg_confidence = sum(float(row.get("confidence") or 0) for row in winning_reads) / max(1, support)
+    strong = support >= 2 and avg_confidence >= 0.70
+    overwrite_safe = support >= 3 and avg_confidence >= 0.84
+    return {
+        "status": "consensus_read" if strong else "low_confidence_consensus",
+        "round_number": round_number if strong else None,
+        "candidate_round_number": round_number,
+        "support": support,
+        "overwrite_safe": overwrite_safe,
+        "confidence": round(avg_confidence if strong else min(avg_confidence, 0.45), 2),
+        "samples": reads,
+    }
+
+
+def read_scoreboard_round(tesseract: str, frame_path: Path, work_dir: Path, death_id: int, sample_tag: str = "") -> Dict[str, Any]:
     image = Image.open(frame_path).convert("RGB")
     crops = scoreboard_score_crops(image)
-    reads = {}
-    for key, crop_img in crops.items():
-        crop_path = work_dir / f"death-{death_id}-{key}.png"
-        preprocess_score_crop(crop_img).save(crop_path)
-        text = run_tesseract_digits(tesseract, crop_path)
-        value = parse_score_digit(text)
-        reads[key] = {"text": text, "score": value, "crop": str(crop_path)}
-    left = reads["left"]["score"]
-    right = reads["right"]["score"]
+    reads: Dict[str, List[Dict[str, Any]]] = {"left": [], "right": []}
+    for key, variants in crops.items():
+        for variant, crop_img in variants.items():
+            for preprocess_name, prepared in preprocess_score_crops(crop_img).items():
+                tag = f"{sample_tag}-" if sample_tag else ""
+                crop_path = work_dir / f"death-{death_id}-{tag}{key}-{variant}-{preprocess_name}.png"
+                prepared.save(crop_path)
+                text = run_tesseract_digits(tesseract, crop_path)
+                value = parse_score_digit(text)
+                reads[key].append({"variant": f"{variant}:{preprocess_name}", "text": text, "score": value, "crop": str(crop_path)})
+    left_read = best_score_read(reads["left"])
+    right_read = best_score_read(reads["right"])
+    left = left_read.get("score")
+    right = right_read.get("score")
     if left is None or right is None:
         return {
             "status": "unreadable",
@@ -356,47 +410,80 @@ def read_scoreboard_round(tesseract: str, frame_path: Path, work_dir: Path, deat
             "right_score": right,
             "round_number": None,
             "confidence": 0.0,
-            "raw": reads,
+            "raw": {"left": left_read, "right": right_read, "all": reads},
         }
     round_number = int(left) + int(right) + 1
     valid = 1 <= round_number <= 30 and 0 <= int(left) <= 14 and 0 <= int(right) <= 14
+    confidence = min(float(left_read.get("confidence") or 0), float(right_read.get("confidence") or 0))
     return {
         "status": "read" if valid else "out_of_range",
         "left_score": int(left),
         "right_score": int(right),
         "round_number": round_number if valid else None,
-        "confidence": 0.82 if valid else 0.25,
-        "raw": reads,
+        "confidence": confidence if valid else 0.25,
+        "raw": {"left": left_read, "right": right_read, "all": reads},
     }
 
 
-def scoreboard_score_crops(image: Image.Image) -> Dict[str, Image.Image]:
+def best_score_read(reads: List[Dict[str, Any]]) -> Dict[str, Any]:
+    valid = [item for item in reads if item.get("score") is not None]
+    if not valid:
+        return {"score": None, "confidence": 0.0, "reads": reads}
+    counts: Dict[int, int] = {}
+    for item in valid:
+        score = int(item["score"])
+        counts[score] = counts.get(score, 0) + 1
+    score, count = max(counts.items(), key=lambda item: item[1])
+    representative = next(item for item in valid if int(item["score"]) == score)
+    confidence = min(0.92, 0.52 + (count * 0.16))
+    return {**representative, "score": score, "confidence": round(confidence, 2), "support": count, "reads": reads}
+
+
+def scoreboard_score_crops(image: Image.Image) -> Dict[str, Dict[str, Image.Image]]:
     width, height = image.size
     # VALORANT's top scoreboard is centered. These crops target the two score numbers
-    # beside the round timer and avoid player icons on the far left/right.
+    # beside the round timer and use variants because HUD scale differs by capture.
     boxes = {
-        "left": (0.425, 0.015, 0.485, 0.095),
-        "right": (0.515, 0.015, 0.575, 0.095),
+        "left": {
+            "tight": (0.425, 0.015, 0.485, 0.095),
+            "wide": (0.405, 0.010, 0.492, 0.105),
+            "lower": (0.420, 0.030, 0.490, 0.120),
+            "tall": (0.412, 0.000, 0.492, 0.130),
+        },
+        "right": {
+            "tight": (0.515, 0.015, 0.575, 0.095),
+            "wide": (0.508, 0.010, 0.595, 0.105),
+            "lower": (0.510, 0.030, 0.580, 0.120),
+            "tall": (0.508, 0.000, 0.588, 0.130),
+        },
     }
     return {
-        key: image.crop(
-            (
-                int(width * left),
-                int(height * top),
-                int(width * right),
-                int(height * bottom),
+        key: {
+            variant: image.crop(
+                (
+                    int(width * left),
+                    int(height * top),
+                    int(width * right),
+                    int(height * bottom),
+                )
             )
-        )
-        for key, (left, top, right, bottom) in boxes.items()
+            for variant, (left, top, right, bottom) in variants.items()
+        }
+        for key, variants in boxes.items()
     }
 
 
-def preprocess_score_crop(image: Image.Image) -> Image.Image:
+def preprocess_score_crops(image: Image.Image) -> Dict[str, Image.Image]:
     gray = ImageOps.grayscale(image)
     gray = ImageOps.autocontrast(gray)
-    gray = gray.resize((gray.width * 4, gray.height * 4))
+    gray = gray.resize((gray.width * 5, gray.height * 5))
     gray = gray.filter(ImageFilter.SHARPEN)
-    return gray.point(lambda value: 255 if value > 145 else 0)
+    return {
+        "binary-low": gray.point(lambda value: 255 if value > 125 else 0),
+        "binary-mid": gray.point(lambda value: 255 if value > 145 else 0),
+        "binary-high": gray.point(lambda value: 255 if value > 165 else 0),
+        "contrast": gray,
+    }
 
 
 def run_tesseract_digits(tesseract: str, image_path: Path) -> str:

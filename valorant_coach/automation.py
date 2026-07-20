@@ -939,7 +939,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.12.3-local"
+APP_VERSION = "0.12.4-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -950,6 +950,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Make Jump scroll back to the video, fold dashboard panels and Coach Mode, and require consensus before saving scoreboard OCR rounds.",
             "Add a separate aggregate Player Status tab and combine clip review actions into one Coach This Clip workflow.",
             "Add a visual Player Status report and display timeline/spacing-based round estimates when stored round numbers are missing.",
             "Make Coach Memory collapsible, keep the left tab panel scroll-contained, and show immediate Clip Coach loading status.",
