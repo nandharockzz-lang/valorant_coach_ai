@@ -289,6 +289,7 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
       <label>Review mode
         <select id="localAiReviewMode">
           <option value="contact" ${localAi.review_mode === "contact" ? "selected" : ""}>Contact: final 5s at 5 FPS</option>
+          <option value="burst" ${localAi.review_mode === "burst" ? "selected" : ""}>Burst: final 5s at 10 FPS, batched</option>
           <option value="hybrid" ${localAi.review_mode === "hybrid" ? "selected" : ""}>Hybrid: context + contact</option>
           <option value="context" ${localAi.review_mode === "context" ? "selected" : ""}>Context: final 10s at 2 FPS</option>
         </select>

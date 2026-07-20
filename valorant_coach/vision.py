@@ -859,6 +859,12 @@ def local_ai_sequence_profile(mode: str) -> Dict[str, Any]:
             "limit": 30,
             "segments": [{"label": "contact", "start_before": 5.0, "duration": 5.0, "fps": 5, "width": 576}],
         },
+        "burst": {
+            "id": "burst",
+            "label": "Burst: final 5s at 10 FPS, batched",
+            "limit": 60,
+            "segments": [{"label": "burst-contact", "start_before": 5.0, "duration": 5.0, "fps": 10, "width": 448}],
+        },
         "hybrid": {
             "id": "hybrid",
             "label": "Hybrid: context 5s at 2 FPS + contact 5s at 5 FPS",

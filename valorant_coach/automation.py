@@ -939,7 +939,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.11.2-local"
+APP_VERSION = "0.11.3-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -950,6 +950,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Add batched Local AI clip review and Burst mode for more frames without one oversized model request.",
             "Upgrade the bottom status bar into a compact action pill with busy spinner and job progress percent.",
             "Reduce Local AI frame payload size so Contact mode fits LM Studio context limits more reliably.",
             "Add Local AI review modes: Context, Contact, and Hybrid frame sampling.",
@@ -1696,6 +1697,13 @@ def death_round_label(death: Dict[str, Any]) -> str:
 
 
 def run_local_http_review(db: Database, death_id: int, payload: Dict[str, Any], status: Dict[str, Any]) -> Dict[str, Any]:
+    keyframes = payload.get("keyframes") or []
+    if len(keyframes) > 30:
+        return run_local_http_review_batched(db, death_id, payload, status, chunk_size=30)
+    return run_local_http_review_single(db, death_id, payload, status)
+
+
+def run_local_http_review_single(db: Database, death_id: int, payload: Dict[str, Any], status: Dict[str, Any], save: bool = True) -> Dict[str, Any]:
     provider = status["provider"]
     images = [item["image_base64"] for item in payload.get("keyframes") or [] if item.get("image_base64")]
     prompt = payload["prompt"]
@@ -1728,8 +1736,138 @@ def run_local_http_review(db: Database, death_id: int, payload: Dict[str, Any], 
         return {"ok": False, "message": f"{provider} request failed: {exc}", "status": status}
     text = response.get("response") or (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or json.dumps(response)
     result = parse_model_review(text, provider)
-    db.save_death_analysis(death_id, "local_ai_review", result)
+    if save:
+        db.save_death_analysis(death_id, "local_ai_review", result)
     return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
+
+
+def run_local_http_review_batched(
+    db: Database,
+    death_id: int,
+    payload: Dict[str, Any],
+    status: Dict[str, Any],
+    chunk_size: int = 30,
+) -> Dict[str, Any]:
+    frames = payload.get("keyframes") or []
+    chunks = [frames[index : index + chunk_size] for index in range(0, len(frames), chunk_size)]
+    chunk_reviews = []
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_payload = dict(payload)
+        chunk_payload["keyframes"] = chunk
+        chunk_payload["prompt"] = render_batch_model_prompt(payload["prompt"], index, len(chunks), chunk)
+        response = run_local_http_review_single(db, death_id, chunk_payload, status, save=False)
+        if not response.get("ok"):
+            return response
+        review = response.get("analysis") or {}
+        review["batch_index"] = index
+        review["frame_range"] = batch_frame_range(chunk)
+        chunk_reviews.append(review)
+    combined = synthesize_batched_reviews(db, death_id, payload, status, chunk_reviews)
+    combined["batch_reviews"] = chunk_reviews
+    combined["batches"] = len(chunk_reviews)
+    db.save_death_analysis(death_id, "local_ai_review", combined)
+    return {"ok": True, "message": combined["summary"], "analysis": combined, "status": status}
+
+
+def render_batch_model_prompt(base_prompt: str, index: int, total: int, frames: List[Dict[str, Any]]) -> str:
+    frame_range = batch_frame_range(frames)
+    return (
+        base_prompt
+        + f"\n\nThis is batch {index}/{total}, covering {frame_range}. "
+        "Your job for this batch is detection first: inspect every frame for any visible enemy body, head, weapon, outline, muzzle flash, tracer, damage cue, or sudden contact. "
+        "Return strict JSON with summary, visible_evidence, labels, better_play, drill, confidence. "
+        "In visible_evidence, cite exact frame numbers/timing for anything you see. If no enemy is visible, say that explicitly and still describe crosshair/movement evidence."
+    )
+
+
+def batch_frame_range(frames: List[Dict[str, Any]]) -> str:
+    if not frames:
+        return "no frames"
+    start = frames[0].get("seconds_before_death")
+    end = frames[-1].get("seconds_before_death")
+    first_index = frames[0].get("sequence_index") or frames[0].get("index")
+    last_index = frames[-1].get("sequence_index") or frames[-1].get("index")
+    return f"frames {first_index}-{last_index}, {start}s to {end}s before death"
+
+
+def synthesize_batched_reviews(
+    db: Database,
+    death_id: int,
+    payload: Dict[str, Any],
+    status: Dict[str, Any],
+    chunk_reviews: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    provider = status["provider"]
+    prompt = render_batch_synthesis_prompt(payload["prompt"], chunk_reviews)
+    if provider == "ollama":
+        endpoint = status["base_url"].rstrip("/") + "/api/generate"
+        body = {"model": status["model"], "prompt": local_model_system_prompt(status) + "\n\n" + prompt, "stream": False}
+    else:
+        endpoint = status["base_url"].rstrip("/") + "/chat/completions"
+        body = {
+            "model": status["model"],
+            "messages": [
+                {"role": "system", "content": local_model_system_prompt(status)},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.1,
+            "max_tokens": 900,
+        }
+    try:
+        response = post_json(endpoint, body, timeout=180)
+        text = response.get("response") or (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or json.dumps(response)
+        result = parse_model_review(text, provider)
+    except Exception:
+        result = fallback_batched_review(provider, chunk_reviews)
+    result["kind"] = "local_ai_review"
+    result["status"] = "completed"
+    result["provider"] = provider
+    return result
+
+
+def render_batch_synthesis_prompt(base_prompt: str, chunk_reviews: List[Dict[str, Any]]) -> str:
+    compact_reviews = [
+        {
+            "batch_index": review.get("batch_index"),
+            "frame_range": review.get("frame_range"),
+            "summary": review.get("summary"),
+            "visible_evidence": review.get("visible_evidence") or [],
+            "labels": review.get("labels") or [],
+            "better_play": review.get("better_play"),
+            "confidence": review.get("confidence"),
+        }
+        for review in chunk_reviews
+    ]
+    return (
+        base_prompt
+        + "\n\nCombine these per-batch visual reviews into one final VALORANT coaching analysis. "
+        "Prioritize any batch that saw a visible enemy/contact cue. Do not invent details beyond the batch evidence. "
+        "Return strict JSON with summary, visible_evidence, labels, better_play, drill, confidence.\n\n"
+        + json.dumps(compact_reviews)
+    )
+
+
+def fallback_batched_review(provider: str, chunk_reviews: List[Dict[str, Any]]) -> Dict[str, Any]:
+    evidence = []
+    labels = []
+    summaries = []
+    confidence = 0.0
+    for review in chunk_reviews:
+        summaries.append(str(review.get("summary") or ""))
+        evidence.extend(review.get("visible_evidence") or [])
+        labels.extend(review.get("labels") or [])
+        confidence = max(confidence, float(review.get("confidence") or 0))
+    return {
+        "kind": "local_ai_review",
+        "summary": "Batched Local AI review completed. " + " ".join(summaries[:2])[:450],
+        "visible_evidence": evidence[:8],
+        "labels": sorted(set(labels))[:6],
+        "better_play": next((str(review.get("better_play")) for review in chunk_reviews if review.get("better_play")), ""),
+        "drill": next((str(review.get("drill")) for review in chunk_reviews if review.get("drill")), ""),
+        "confidence": confidence or 0.5,
+        "status": "completed",
+        "provider": provider,
+    }
 
 
 def post_json(url: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
