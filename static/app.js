@@ -1071,8 +1071,9 @@ async function aiReview(deathId) {
 }
 
 async function localAiReview(deathId) {
+  setStatus(`Clip Coach is reviewing death #${deathId}. Sending frames to your local model...`, { state: "busy" });
   const payload = await api(`/api/deaths/${deathId}/local-ai-review`, { method: "POST" });
-  setStatus(payload.message);
+  setStatus(payload.message || `Clip Coach review ready for death #${deathId}.`);
   if (currentMatchId) await loadReport(currentMatchId);
 }
 
@@ -1486,14 +1487,19 @@ function renderCoachMemoryStrip(coach) {
   const target = weekly.target || plan.in_game_rule || memory.summary || "Build memory by reviewing deaths with Clip Coach.";
   const weighted = (coachV2.weighted_profile || []).slice(0, 3).map((item) => `<span class="tag">${escapeHtml(item.label)}</span>`).join("");
   return `
-    <section class="coach-memory-strip">
-      <div>
-        <span class="muted">Coach Memory</span>
-        <strong>${escapeHtml(focus)}</strong>
+    <details class="coach-memory-strip">
+      <summary>
+        <span>
+          <span class="muted">Coach Memory</span>
+          <strong>${escapeHtml(focus)}</strong>
+        </span>
+        <span class="memory-tags">${weighted || '<span class="tag">learning</span>'}</span>
+      </summary>
+      <div class="coach-memory-body">
         <p>${escapeHtml(target)}</p>
+        <p class="muted">Used as context for draft reviews. Confirmed markers are changed only when you save them.</p>
       </div>
-      <div class="memory-tags">${weighted || '<span class="tag">learning</span>'}</div>
-    </section>
+    </details>
   `;
 }
 
@@ -1959,7 +1965,7 @@ function renderDeathCard(death) {
   const vision = renderVision(death.vision);
   const understanding = renderUnderstanding(death.understanding);
   const keyframes = renderKeyframes(death.keyframes);
-  const localAi = renderLocalAiReview(death.local_ai_review);
+  const localAi = renderLocalAiReview(death.local_ai_review, death);
   const annotations = renderAnnotations(death.annotations || []);
   return `
     <article class="death-card" data-death-id="${death.id}">
@@ -2057,7 +2063,7 @@ function renderUnderstanding(row) {
   `;
 }
 
-function renderLocalAiReview(row) {
+function renderLocalAiReview(row, death = {}) {
   if (!row || !row.payload) {
     return "";
   }
@@ -2067,21 +2073,48 @@ function renderLocalAiReview(row) {
     .filter(Boolean)
     .map((item) => `<li>${escapeHtml(item)}</li>`)
     .join("");
+  const memoryFocus = latestCoachDashboard?.coach_v2?.weekly_focus?.primary_focus || latestCoachDashboard?.plan?.focus_label || "";
+  const draftLabels = Array.isArray(payload.labels) ? payload.labels.join(", ") : "";
+  const draftNote = [
+    payload.summary ? `Clip Coach: ${payload.summary}` : "",
+    payload.better_play ? `Better play: ${payload.better_play}` : "",
+    memoryFocus ? `Coach memory focus: ${memoryFocus}` : "",
+  ].filter(Boolean).join(" | ");
   return `
     <div class="analysis-card">
       <div class="analysis-head">
-        <strong>Local AI Review</strong>
+        <strong>Clip Coach Review</strong>
         <span>${escapeHtml(payload.status || "captured")} · ${Math.round(Number(payload.confidence || 0) * 100)}%</span>
       </div>
       <p>${escapeHtml(payload.summary || "")}</p>
+      ${memoryFocus ? `<p><strong>Coach memory context:</strong> ${escapeHtml(memoryFocus)}</p>` : ""}
       ${evidence ? `<p><strong>Visible evidence</strong></p><ul class="compact-list">${evidence}</ul>` : ""}
       ${payload.extracted_text ? `<p><strong>Extracted text:</strong> ${escapeHtml(payload.extracted_text)}</p>` : ""}
       ${payload.scoreboard ? `<p><strong>Scoreboard:</strong> ${escapeHtml(JSON.stringify(payload.scoreboard))}</p>` : ""}
       ${payload.better_play ? `<p><strong>Better play:</strong> ${escapeHtml(payload.better_play)}</p>` : ""}
       ${payload.drill ? `<p><strong>Drill:</strong> ${escapeHtml(payload.drill)}</p>` : ""}
       <div>${labels}</div>
+      <div class="row local-ai-actions">
+        <button class="secondary" data-action="fill-review-draft" data-id="${death.id || ""}" data-labels="${escapeAttr(draftLabels)}" data-note="${escapeAttr(draftNote)}">Fill Review Draft</button>
+      </div>
     </div>
   `;
+}
+
+function fillReviewDraft(button) {
+  const card = button.closest(".death-card");
+  if (!card) return;
+  const labels = button.dataset.labels || "";
+  const note = button.dataset.note || "";
+  const labelsInput = card.querySelector('[data-field="mistake_labels"]');
+  const notesInput = card.querySelector('[data-field="notes"]');
+  if (labelsInput && labels && !labelsInput.value.trim()) {
+    labelsInput.value = labels;
+  }
+  if (notesInput && note) {
+    notesInput.value = notesInput.value.trim() ? `${notesInput.value.trim()} | ${note}` : note;
+  }
+  setStatus("Review draft filled from Clip Coach. Save the marker to confirm it.");
 }
 
 function renderAnnotations(rows) {
@@ -2526,6 +2559,7 @@ els.reportView.addEventListener("click", (event) => {
   if (action === "gameplay") analyzeGameplay(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "ai-review") aiReview(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "local-ai-review") localAiReview(button.dataset.id).catch((err) => setStatus(err.message));
+  if (action === "fill-review-draft") fillReviewDraft(button);
   if (action === "advice-feedback") saveAdviceFeedback(button.dataset.id, button.dataset.verdict).catch((err) => setStatus(err.message));
   if (action === "save-death") saveDeath(button).catch((err) => setStatus(err.message));
   if (action === "save-correction") saveDeathCorrection(button).catch((err) => setStatus(err.message));
