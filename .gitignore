@@ -12,3 +12,5 @@ build/
 tools/
 *.log
 .pytest_cache/
+knowledge/raw/
+knowledge/index.json

@@ -1,0 +1,327 @@
+{
+  "snippets": [
+    {
+      "id": "fundamental-angle-isolation",
+      "title": "Angle isolation",
+      "type": "fundamental",
+      "topic": "positioning",
+      "tags": [
+        "exposed to multiple angles",
+        "dry peek",
+        "positioning"
+      ],
+      "text": "When reviewing a death, first ask whether the player exposed themselves to one fight or two. A good VALORANT peek slices one angle, keeps cover close, and avoids giving crossfires free contact.",
+      "priority": 90
+    },
+    {
+      "id": "fundamental-crosshair-preaim",
+      "title": "Crosshair pre-aim",
+      "type": "fundamental",
+      "topic": "mechanics",
+      "tags": [
+        "crosshair too low/wide",
+        "mechanics",
+        "enemy visible"
+      ],
+      "text": "Judge crosshair placement before the enemy appears. Good placement is already near likely head height and close to the next cleared angle, so the player corrects minimally when contact starts.",
+      "priority": 88
+    },
+    {
+      "id": "fundamental-movement-error",
+      "title": "Movement before shooting",
+      "type": "fundamental",
+      "topic": "mechanics",
+      "tags": [
+        "movement",
+        "first bullet",
+        "wide swing"
+      ],
+      "text": "For rifle fights, check whether the player was still moving when the first bullet should have been accurate. Advice should distinguish bad aim from bad readiness or movement discipline.",
+      "priority": 76
+    },
+    {
+      "id": "fundamental-trade-spacing",
+      "title": "Trade spacing",
+      "type": "fundamental",
+      "topic": "teamplay",
+      "tags": [
+        "isolated from team",
+        "trade",
+        "entry"
+      ],
+      "text": "A fight is healthier when a teammate can trade within roughly one second. If the player dies alone with teammates unable to swing, label the problem as spacing or timing before blaming mechanics.",
+      "priority": 84
+    },
+    {
+      "id": "fundamental-utility-before-contact",
+      "title": "Utility before contact",
+      "type": "fundamental",
+      "topic": "utility",
+      "tags": [
+        "utility unused before taking space",
+        "dry peek"
+      ],
+      "text": "If a player takes first contact into a common defender angle without info, flash, drone, smoke, stun, molly, or teammate pressure, the better play is to change the fight condition before swinging.",
+      "priority": 87
+    },
+    {
+      "id": "fundamental-reset-after-contact",
+      "title": "Reset after contact",
+      "type": "fundamental",
+      "topic": "fight hygiene",
+      "tags": [
+        "poor reposition after contact",
+        "repeated same-angle fight"
+      ],
+      "text": "After being seen, damaged, revealed, or after firing, the player should usually reposition, wait for support, or use utility before re-peeking. Repeating the same angle makes the next duel predictable.",
+      "priority": 85
+    },
+    {
+      "id": "fundamental-minimap-check",
+      "title": "Minimap timing check",
+      "type": "fundamental",
+      "topic": "awareness",
+      "tags": [
+        "late rotation / bad timing",
+        "minimap",
+        "rotation"
+      ],
+      "text": "Use minimap/HUD evidence to judge rotations. A bad rotate usually happens after lost map control, missing teammate contact, spike pressure, or moving through an exposed lane without info.",
+      "priority": 78
+    },
+    {
+      "id": "fundamental-post-plant",
+      "title": "Post-plant discipline",
+      "type": "fundamental",
+      "topic": "post plant",
+      "tags": [
+        "post plant",
+        "timing",
+        "positioning"
+      ],
+      "text": "After spike plant, the player should value time, crossfire, and utility delay over unnecessary duels. Advice should ask whether the death gave defenders a free early fight.",
+      "priority": 72
+    },
+    {
+      "id": "fundamental-retake",
+      "title": "Retake pacing",
+      "type": "fundamental",
+      "topic": "retake",
+      "tags": [
+        "retake",
+        "isolated from team",
+        "utility"
+      ],
+      "text": "On retake, evaluate whether the player waited for teammates and utility before crossing a choke. Solo retake contact is usually a timing/spacing mistake unless it denies an urgent spike tap.",
+      "priority": 74
+    },
+    {
+      "id": "duelist-entry-rule",
+      "title": "Duelist entry rule",
+      "type": "role",
+      "topic": "duelist",
+      "roles": [
+        "Duelist"
+      ],
+      "tags": [
+        "entry",
+        "trade",
+        "space"
+      ],
+      "text": "A duelist entry should either create traded space, force defenders off an angle, or escape after first contact. A death is poor if it consumes entry utility without creating a trade path or map space.",
+      "priority": 82
+    },
+    {
+      "id": "controller-smoke-rule",
+      "title": "Controller smoke rule",
+      "type": "role",
+      "topic": "controller",
+      "roles": [
+        "Controller"
+      ],
+      "tags": [
+        "smoke",
+        "rotation",
+        "space"
+      ],
+      "text": "Controllers are judged by whether smoke timing reduces enemy sightlines before teammates cross or fight. A controller death after late or missing smoke is usually a timing and responsibility issue.",
+      "priority": 80
+    },
+    {
+      "id": "sentinel-anchor-rule",
+      "title": "Sentinel anchor rule",
+      "type": "role",
+      "topic": "sentinel",
+      "roles": [
+        "Sentinel"
+      ],
+      "tags": [
+        "anchor",
+        "utility",
+        "reposition"
+      ],
+      "text": "Sentinels should play around info and delay utility. If the player dry re-peeks after their setup is triggered, coach patience, repositioning, and playing for teammate rotation.",
+      "priority": 80
+    },
+    {
+      "id": "initiator-info-rule",
+      "title": "Initiator information rule",
+      "type": "role",
+      "topic": "initiator",
+      "roles": [
+        "Initiator"
+      ],
+      "tags": [
+        "info",
+        "utility",
+        "flash"
+      ],
+      "text": "Initiators should convert utility into safer team contact. If a clip shows dry contact while recon, flash, dog, drone, or stun was available, coach sequencing before mechanics.",
+      "priority": 80
+    },
+    {
+      "id": "ascent-mid-discipline",
+      "title": "Ascent mid discipline",
+      "type": "map",
+      "topic": "map control",
+      "maps": [
+        "Ascent"
+      ],
+      "tags": [
+        "mid",
+        "dry peek",
+        "crossfire"
+      ],
+      "text": "Ascent mid creates layered threats from cat, tiles, top mid, market, and link timings. Death reviews should ask whether the player isolated mid contact or walked into a second angle.",
+      "priority": 74
+    },
+    {
+      "id": "bind-teleporter-space",
+      "title": "Bind teleporter space",
+      "type": "map",
+      "topic": "rotation",
+      "maps": [
+        "Bind"
+      ],
+      "tags": [
+        "rotation",
+        "utility",
+        "timing"
+      ],
+      "text": "Bind rotations can change quickly through teleporters. Coach deaths around whether the player reacted to sound/info, cleared tight corners, and used utility before entering Hookah, Lamps, or Showers.",
+      "priority": 72
+    },
+    {
+      "id": "haven-three-site-rotations",
+      "title": "Haven three-site rotations",
+      "type": "map",
+      "topic": "rotation",
+      "maps": [
+        "Haven"
+      ],
+      "tags": [
+        "rotation",
+        "timing",
+        "minimap"
+      ],
+      "text": "Haven punishes unsupported rotations because pressure can come through three sites and multiple links. Check minimap timing, teammate contact, and whether the player crossed known danger alone.",
+      "priority": 72
+    },
+    {
+      "id": "split-vertical-crosshair",
+      "title": "Split vertical crosshair",
+      "type": "map",
+      "topic": "mechanics",
+      "maps": [
+        "Split"
+      ],
+      "tags": [
+        "crosshair too low/wide",
+        "verticality",
+        "angles"
+      ],
+      "text": "Split has frequent vertical and rope/elevated fights. Review whether crosshair height was adjusted before entering heaven, ropes, screens, ramps, or site elevation changes.",
+      "priority": 68
+    },
+    {
+      "id": "lotus-multi-lane-pressure",
+      "title": "Lotus multi-lane pressure",
+      "type": "map",
+      "topic": "map control",
+      "maps": [
+        "Lotus"
+      ],
+      "tags": [
+        "rotation",
+        "multiple angles",
+        "utility"
+      ],
+      "text": "Lotus creates fast multi-lane pressure through doors and rotating links. A good death review checks whether the player cleared the second lane or rotated after control was already broken.",
+      "priority": 70
+    },
+    {
+      "id": "sunset-mid-control",
+      "title": "Sunset mid control",
+      "type": "map",
+      "topic": "map control",
+      "maps": [
+        "Sunset"
+      ],
+      "tags": [
+        "mid",
+        "timing",
+        "crossfire"
+      ],
+      "text": "Sunset mid control changes site pressure quickly. Coach deaths around whether the player respected market/link timings and avoided entering a mid crossfire without utility or trade spacing.",
+      "priority": 70
+    },
+    {
+      "id": "icebox-vertical-readiness",
+      "title": "Icebox vertical readiness",
+      "type": "map",
+      "topic": "mechanics",
+      "maps": [
+        "Icebox"
+      ],
+      "tags": [
+        "verticality",
+        "crosshair too low/wide",
+        "positioning"
+      ],
+      "text": "Icebox fights often shift vertically around nests, rafters, screens, tube, and site boxes. Judge whether the player pre-aimed vertical elevation before contact instead of flicking late.",
+      "priority": 68
+    },
+    {
+      "id": "breeze-range-discipline",
+      "title": "Breeze range discipline",
+      "type": "map",
+      "topic": "mechanics",
+      "maps": [
+        "Breeze"
+      ],
+      "tags": [
+        "range",
+        "crosshair",
+        "positioning"
+      ],
+      "text": "Breeze creates long-range rifle fights. Coach around burst discipline, cover distance, and whether the player took a weapon-appropriate fight instead of wide-swinging into long sightlines.",
+      "priority": 68
+    },
+    {
+      "id": "pearl-link-control",
+      "title": "Pearl link control",
+      "type": "map",
+      "topic": "map control",
+      "maps": [
+        "Pearl"
+      ],
+      "tags": [
+        "rotation",
+        "link",
+        "multiple angles"
+      ],
+      "text": "Pearl punishes late link and connector movement. Review whether the player had info before crossing mid/link space and whether they isolated site or main pressure.",
+      "priority": 66
+    }
+  ]
+}

@@ -6,7 +6,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Tuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .advice import generate_advice
 from .analyzer import analyze_match, import_video, scan_recording_folder
@@ -51,6 +51,8 @@ from .automation import (
     run_local_ai_review,
     run_match_pipeline,
     save_benchmark_label,
+    save_clip_review_feedback,
+    save_clip_training_label,
     save_coach_moment_feedback,
     save_clip_annotation,
     save_local_ai_config,
@@ -82,7 +84,8 @@ from .deep_analysis import (
     infer_rounds_from_scoreboard,
     tesseract_path,
 )
-from .reports import build_report, write_markdown_report
+from .knowledge import knowledge_status, prompt_preview, rebuild_knowledge_base, search_knowledge
+from .reports import build_report, save_death_context_correction, write_markdown_report
 from .vision import (
     analyze_match_events,
     build_keyframe_gallery,
@@ -108,6 +111,7 @@ REPORTS_DIR = ROOT / "reports"
 CLIPS_DIR = ROOT / "clips"
 VISION_DIR = ROOT / "data" / "vision"
 DEEP_DIR = ROOT / "data" / "deep"
+KNOWLEDGE_DIR = ROOT / "knowledge"
 DB = Database(DATA_DIR / "coach.sqlite3")
 PATHS = {
     "data": DATA_DIR,
@@ -115,6 +119,7 @@ PATHS = {
     "clips": CLIPS_DIR,
     "vision": VISION_DIR,
     "deep": DEEP_DIR,
+    "knowledge": KNOWLEDGE_DIR,
 }
 JOBS = JobManager(DB)
 WATCHER = RecordingWatcher(JOBS)
@@ -140,6 +145,25 @@ class CoachHandler(BaseHTTPRequestHandler):
             self.json_response(plugin_registry(DB))
         elif parsed.path == "/api/local-ai":
             self.json_response(local_ai_status(DB))
+        elif parsed.path == "/api/knowledge/status":
+            self.json_response(knowledge_status(KNOWLEDGE_DIR))
+        elif parsed.path == "/api/knowledge/search":
+            query = parse_qs(parsed.query)
+            self.json_response(
+                search_knowledge(
+                    KNOWLEDGE_DIR,
+                    query=str((query.get("q") or [""])[0]),
+                    context={
+                        "map": (query.get("map") or [""])[0],
+                        "agent": (query.get("agent") or [""])[0],
+                        "labels": (query.get("topic") or [""])[0],
+                    },
+                )
+            )
+        elif parsed.path == "/api/knowledge/prompt-preview":
+            query = parse_qs(parsed.query)
+            death_id = int((query.get("death_id") or ["0"])[0] or 0)
+            self.json_response(prompt_preview(DB, death_id, KNOWLEDGE_DIR))
         elif parsed.path == "/api/setup":
             self.json_response(setup_wizard_status(PATHS, DB))
         elif parsed.path == "/api/prompts":
@@ -226,10 +250,12 @@ class CoachHandler(BaseHTTPRequestHandler):
                 payload = self.read_json()
                 for key in (
                     "recording_dir",
+                    "player_name",
                     "auto_import",
                     "auto_analysis",
                     "privacy_mode",
                     "detector_sensitivity",
+                    "enemy_detector_command",
                     "ocr_engine",
                     "frame_sample_rate",
                     "storage_cleanup_days",
@@ -265,6 +291,10 @@ class CoachHandler(BaseHTTPRequestHandler):
                 self.json_response(save_local_ai_config(DB, self.read_json()))
             elif parsed.path == "/api/local-ai/test":
                 self.json_response(test_local_ai_connection(DB, self.read_json()))
+            elif parsed.path == "/api/knowledge/rebuild":
+                payload = self.read_json()
+                fetch_remote = str(payload.get("fetch_remote", "true")).lower() not in {"0", "false", "no", "off"}
+                self.json_response(rebuild_knowledge_base(KNOWLEDGE_DIR, fetch_remote=fetch_remote))
             elif parsed.path == "/api/prompts":
                 self.json_response(save_prompt_template(DB, self.read_json()))
             elif parsed.path == "/api/evaluation/labels":
@@ -532,10 +562,16 @@ class CoachHandler(BaseHTTPRequestHandler):
                     self.json_response(ai_review_status(DB, death_id))
                 elif parsed.path.endswith("/local-ai-review"):
                     self.json_response(run_local_ai_review(DB, death_id))
+                elif parsed.path.endswith("/review-feedback"):
+                    self.json_response(save_clip_review_feedback(DB, death_id, self.read_json()))
+                elif parsed.path.endswith("/training-label"):
+                    self.json_response(save_clip_training_label(DB, death_id, self.read_json()))
                 elif parsed.path.endswith("/annotations"):
                     self.json_response(save_clip_annotation(DB, death_id, self.read_json()))
                 elif parsed.path.endswith("/advice"):
                     self.json_response({"ok": True, "advice": generate_advice(DB, death_id)})
+                elif parsed.path.endswith("/context"):
+                    self.json_response(save_death_context_correction(DB, death_id, self.read_json()))
                 else:
                     payload = self.read_json()
                     DB.update_death_full(
@@ -624,10 +660,12 @@ class CoachHandler(BaseHTTPRequestHandler):
     def settings_payload(self) -> Dict[str, Any]:
         return {
             "recording_dir": DB.get_setting("recording_dir", ""),
+            "player_name": DB.get_setting("player_name", "SicaJR"),
             "auto_import": DB.get_setting("auto_import", "false"),
             "auto_analysis": DB.get_setting("auto_analysis", "false"),
             "privacy_mode": DB.get_setting("privacy_mode", "local-only"),
             "detector_sensitivity": DB.get_setting("detector_sensitivity", "normal"),
+            "enemy_detector_command": DB.get_setting("enemy_detector_command", ""),
             "ocr_engine": DB.get_setting("ocr_engine", "tesseract"),
             "frame_sample_rate": DB.get_setting("frame_sample_rate", "standard"),
             "storage_cleanup_days": DB.get_setting("storage_cleanup_days", "30"),

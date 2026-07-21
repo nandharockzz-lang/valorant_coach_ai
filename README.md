@@ -81,6 +81,8 @@ Automation features:
 - It now also includes local plugin status, installer diagnostics, detector benchmark metrics, local-AI command configuration, privacy export, and privacy wipe controls.
 - Setup Wizard checks recording folder, writable app folders, ffmpeg, Tesseract, and local model provider readiness.
 - Local AI supports custom command, Ollama, LM Studio, and llama.cpp-style local HTTP providers.
+- **Knowledge Base** builds a local VALORANT context index from curated coaching rules and structured game data, then injects only relevant snippets into Local AI clip reviews.
+- Death cards include a **Match Context** panel for correcting map, agent, round, side, weapon, location, spike state, and alive counts before running Clip Coach.
 - Prompt templates are editable for role/map/agent-specific model review criteria.
 - Detector Tuning recommends sensitivity from accepted/rejected suggestions plus benchmark labels.
 - Session Report summarizes top mistakes, improvement signal, and next drills for a play block.

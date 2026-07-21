@@ -516,6 +516,10 @@ class Database:
             item["understanding"] = self.get_latest_structured_analysis("death", death_id, "clip_understanding")
             item["keyframes"] = self.get_latest_structured_analysis("death", death_id, "keyframes")
             item["local_ai_review"] = self.get_latest_structured_analysis("death", death_id, "local_ai_review")
+            item["clip_visual_signals"] = self.get_latest_structured_analysis("death", death_id, "clip_visual_signals")
+            item["clip_ocr_regions"] = self.get_latest_structured_analysis("death", death_id, "clip_ocr_regions")
+            item["clip_review_feedback"] = self.get_latest_structured_analysis("death", death_id, "clip_review_feedback")
+            item["clip_training_label"] = self.get_latest_structured_analysis("death", death_id, "clip_training_label")
             item["annotations"] = self.list_subject_analyses("death", death_id, "clip_annotation", limit=20)
             deaths.append(item)
         return deaths
@@ -535,6 +539,11 @@ class Database:
         item["understanding"] = self.get_latest_structured_analysis("death", death_id, "clip_understanding")
         item["keyframes"] = self.get_latest_structured_analysis("death", death_id, "keyframes")
         item["local_ai_review"] = self.get_latest_structured_analysis("death", death_id, "local_ai_review")
+        item["context_extraction"] = self.get_latest_structured_analysis("death", death_id, "context_extraction")
+        item["clip_visual_signals"] = self.get_latest_structured_analysis("death", death_id, "clip_visual_signals")
+        item["clip_ocr_regions"] = self.get_latest_structured_analysis("death", death_id, "clip_ocr_regions")
+        item["clip_review_feedback"] = self.get_latest_structured_analysis("death", death_id, "clip_review_feedback")
+        item["clip_training_label"] = self.get_latest_structured_analysis("death", death_id, "clip_training_label")
         item["annotations"] = self.list_subject_analyses("death", death_id, "clip_annotation", limit=20)
         return item
 

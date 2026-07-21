@@ -919,6 +919,25 @@ video {
   line-height: 1.4;
 }
 
+.detector-ready,
+.detector-warning {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.detector-ready {
+  color: #c7f3df;
+  background: rgba(57, 185, 143, 0.12);
+  border-color: rgba(57, 185, 143, 0.25);
+}
+
+.detector-warning {
+  color: #ffd2d6;
+  background: rgba(255, 70, 85, 0.12);
+  border-color: rgba(255, 70, 85, 0.28);
+}
+
 .automation-block textarea {
   min-height: 72px;
   resize: vertical;
@@ -1130,6 +1149,193 @@ video {
 
 .compact-list li {
   margin-bottom: 7px;
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.knowledge-results {
+  display: grid;
+  gap: 8px;
+}
+
+.match-context-panel {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--muted);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.match-context-panel.ready {
+  border-left-color: var(--teal);
+}
+
+.match-context-panel.needs-work {
+  border-left-color: var(--red);
+}
+
+.match-context-panel summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.context-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.context-chip {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  padding: 4px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.context-chip.unknown {
+  color: var(--muted);
+}
+
+.context-chip b {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.context-extraction {
+  margin: 2px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.context-extraction summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  color: #fff;
+}
+
+.context-extraction summary strong {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.context-editor-panel {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.context-editor-panel > summary {
+  cursor: pointer;
+  color: #dce5f2;
+  font-weight: 700;
+}
+
+.evidence-timeline {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.evidence-timeline > strong {
+  color: #fff;
+}
+
+.evidence-timeline ol {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.evidence-timeline li {
+  display: grid;
+  grid-template-columns: auto minmax(86px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #dce5f2;
+}
+
+.evidence-timeline li em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.timeline-jump {
+  padding: 4px 7px;
+  min-height: 0;
+  font-size: 12px;
+}
+
+.claim-confidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.claim-confidence span {
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: #dce5f2;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.segment-review-list p {
+  margin: 4px 0 0;
+}
+
+.match-themes-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.match-themes-panel p {
+  margin: 0;
+}
+
+.local-ai-actions input {
+  min-width: min(260px, 100%);
+}
+
+.context-editor {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.context-editor label {
+  margin: 0;
+}
+
+.context-editor .wide {
+  grid-column: 1 / -1;
 }
 
 .add-death {
@@ -1473,13 +1679,15 @@ video {
 
   .death-editor,
   .add-death,
+  .context-editor,
   .suggestion-card,
   .overlay-tools {
     grid-template-columns: 1fr;
   }
 
   .death-editor .wide,
-  .add-death .wide {
+  .add-death .wide,
+  .context-editor .wide {
     grid-column: auto;
   }
 }
@@ -1672,6 +1880,118 @@ body {
 .local-ai-actions {
   margin-top: 12px;
   margin-bottom: 0;
+}
+
+.training-label-card {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.training-label-card summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  cursor: pointer;
+}
+
+.training-label-card summary strong {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.training-label-card p {
+  padding: 0 10px;
+}
+
+.training-label-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.training-label-grid label {
+  margin: 0;
+}
+
+.training-label-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.training-label-grid button {
+  justify-self: start;
+}
+
+.clip-signal-timeline,
+.multi-pass-review {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.clip-signal-timeline summary,
+.multi-pass-review summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  color: #fff;
+  cursor: pointer;
+}
+
+.clip-signal-timeline summary strong,
+.multi-pass-review summary strong {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.clip-signal-track {
+  position: relative;
+  height: 30px;
+  margin: 0 10px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(90deg, #101722, #0d141d);
+}
+
+.clip-signal-marker {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 18px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid #0b111a;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  box-shadow: none;
+}
+
+.clip-signal-marker.contact,
+.timeline-legend i.signal-contact {
+  background: var(--teal);
+}
+
+.clip-signal-marker.damage,
+.timeline-legend i.signal-damage {
+  background: var(--red);
+}
+
+.clip-signal-marker.empty,
+.timeline-legend i.signal-empty {
+  background: #5f6b7c;
+}
+
+.clip-signal-timeline .compact-list,
+.multi-pass-review .compact-list {
+  padding: 0 10px 10px 28px;
 }
 
 .report {

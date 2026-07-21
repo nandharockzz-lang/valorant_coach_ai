@@ -116,7 +116,7 @@ async function loadVersionBadge() {
 }
 
 async function loadAutomation() {
-  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, setup, prompts, tuning, modelAudit, sessionReport] = await Promise.all([
+  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport] = await Promise.all([
     api("/api/settings"),
     api("/api/jobs"),
     api("/api/watcher"),
@@ -135,6 +135,7 @@ async function loadAutomation() {
     api("/api/evaluation"),
     api("/api/plugins"),
     api("/api/local-ai"),
+    api("/api/knowledge/status"),
     api("/api/setup"),
     api("/api/prompts"),
     api("/api/detector/tuning"),
@@ -160,6 +161,7 @@ async function loadAutomation() {
     evaluation,
     plugins,
     localAi,
+    knowledge,
     setup,
     prompts,
     tuning,
@@ -170,7 +172,7 @@ async function loadAutomation() {
   renderJobProgressPanel();
 }
 
-function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, setup, prompts, tuning, modelAudit, sessionReport) {
+function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport) {
   const jobRows = jobs.slice(0, 8).map((job) => `
     <li>
       <strong>#${job.id} ${escapeHtml(job.name)}</strong>
@@ -208,13 +210,20 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
   const chartBars = renderAnalyticsBars(analytics);
   const changelog = (version.changelog || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   const setupRows = (setup.steps || []).map((item) => `<li><strong>${escapeHtml(item.label)}</strong>: ${item.ok ? "ready" : item.optional ? "optional" : "needed"}</li>`).join("");
+  const tesseractReady = Boolean((tools.tesseract || {}).available);
+  const detectorReadiness = tesseractReady
+    ? `Primary death detector is active for ${settings.player_name || "SicaJR"}: killfeed OCR plus combat report.`
+    : "Primary death detector needs Tesseract OCR. Until then, Find Deaths uses only fallback visual signals.";
   const promptOptions = Object.keys(prompts.templates || {}).sort().map((key) => `<option value="${escapeAttr(key)}" ${prompts.active === key ? "selected" : ""}>${escapeHtml(key)}</option>`).join("");
+  const knowledgeCounts = Object.entries((knowledge || {}).counts || {}).map(([key, value]) => `<span class="tag">${escapeHtml(key)} ${escapeHtml(value)}</span>`).join("");
   els.automationView.innerHTML = `
     <div class="automation-block">
       <h3>Setup Wizard</h3>
       <p>${setup.ready ? "Ready for review workflow." : "Finish required setup before relying on automation."}</p>
+      <p class="${tesseractReady ? "detector-ready" : "detector-warning"}">${escapeHtml(detectorReadiness)}</p>
       <ul class="compact-list">${setupRows}</ul>
       <label>Recording folder <input id="setupRecordingDir" type="text" value="${escapeAttr(settings.recording_dir || "")}" /></label>
+      <label>In-game name <input id="playerName" type="text" value="${escapeAttr(settings.player_name || "SicaJR")}" placeholder="SicaJR" /></label>
       <div class="row">
         <button data-action="save-setup">Save Setup</button>
         <button class="secondary" data-action="refresh-diagnostics">Refresh Checks</button>
@@ -244,6 +253,7 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
           ${["low", "normal", "high"].map((item) => `<option value="${item}" ${settings.detector_sensitivity === item ? "selected" : ""}>${item}</option>`).join("")}
         </select>
       </label>
+      <label>Enemy detector command <input id="enemyDetectorCommand" type="text" value="${escapeAttr(settings.enemy_detector_command || "")}" placeholder="optional local detector {image}" /></label>
       <label>Frame sample rate
         <select id="frameSampleRate">
           ${["light", "standard", "dense"].map((item) => `<option value="${item}" ${settings.frame_sample_rate === item ? "selected" : ""}>${item}</option>`).join("")}
@@ -331,6 +341,18 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
       </div>
       <div id="localAiTestResult" class="muted"></div>
       <p class="muted">${escapeHtml(localAi.expected_protocol || "")}</p>
+    </div>
+    <div class="automation-block">
+      <h3>Knowledge Base</h3>
+      <p>${knowledge.ready ? escapeHtml(knowledge.summary || "Knowledge base ready.") : "Build the local VALORANT knowledge base before relying on game-specific model context."}</p>
+      <p class="muted">Last built ${escapeHtml(knowledge.last_built_at || "never")} · ${escapeHtml(knowledge.snippet_count || 0)} snippet(s)</p>
+      <div class="tag-row">${knowledgeCounts || '<span class="tag">not built</span>'}</div>
+      <label>Search <input id="knowledgeSearchText" type="text" placeholder="Ascent Jett dry peek crosshair" /></label>
+      <div class="row">
+        <button class="secondary" data-action="rebuild-knowledge">Rebuild Knowledge</button>
+        <button class="secondary" data-action="search-knowledge">Search Knowledge</button>
+      </div>
+      <div id="knowledgeResults" class="knowledge-results muted">Retrieved snippets are injected into Local AI prompts, capped to stay context-safe.</div>
     </div>
     <div class="automation-block">
       <h3>Prompt System</h3>
@@ -487,9 +509,11 @@ async function saveAutomationSettings() {
     method: "POST",
     body: JSON.stringify({
       recording_dir: els.recordingDir.value,
+      player_name: document.querySelector("#playerName")?.value || "SicaJR",
       auto_import: document.querySelector("#autoImport").value,
       auto_analysis: document.querySelector("#autoAnalysis").value,
       detector_sensitivity: document.querySelector("#detectorSensitivity").value,
+      enemy_detector_command: document.querySelector("#enemyDetectorCommand")?.value || "",
       frame_sample_rate: document.querySelector("#frameSampleRate").value,
       skip_completed_analysis: document.querySelector("#skipCompletedAnalysis").value,
       max_concurrent_jobs: document.querySelector("#maxConcurrentJobs").value,
@@ -707,15 +731,53 @@ async function testLocalAiConfig() {
   setStatus(result.message || "Local AI test complete.");
 }
 
+async function rebuildKnowledgeBase() {
+  setStatus("Rebuilding VALORANT knowledge base from local notes and structured game data...", { state: "busy" });
+  const payload = await api("/api/knowledge/rebuild", {
+    method: "POST",
+    body: JSON.stringify({ fetch_remote: true }),
+  });
+  const index = payload.index || {};
+  setStatus(`Knowledge base rebuilt: ${index.snippet_count || 0} snippets.`);
+  await loadAutomation();
+}
+
+async function searchKnowledgeBase() {
+  const query = document.querySelector("#knowledgeSearchText")?.value || "";
+  const target = document.querySelector("#knowledgeResults");
+  setStatus("Searching local VALORANT knowledge...", { state: "busy" });
+  const payload = await api(`/api/knowledge/search?q=${encodeURIComponent(query)}`);
+  const rows = (payload.items || []).map((item) => `
+    <li>
+      <strong>${escapeHtml(item.title || "")}</strong>
+      <span>${escapeHtml(item.topic || "")} · score ${escapeHtml(item.score || "")}</span>
+      <p>${escapeHtml(item.text || "")}</p>
+    </li>
+  `).join("");
+  if (target) {
+    target.innerHTML = `
+      <p>${escapeHtml(payload.count || 0)} retrieved snippet(s).</p>
+      <ul class="compact-list">${rows || "<li>No relevant snippets found.</li>"}</ul>
+      <details>
+        <summary>Prompt Context Preview</summary>
+        <pre class="json-small">${escapeHtml(payload.prompt_context || "")}</pre>
+      </details>
+    `;
+  }
+  setStatus(`Knowledge search returned ${payload.count || 0} snippet(s).`);
+}
+
 async function saveSetupWizard() {
   await api("/api/setup", {
     method: "POST",
     body: JSON.stringify({
       recording_dir: document.querySelector("#setupRecordingDir").value,
+      player_name: document.querySelector("#playerName")?.value || "SicaJR",
       auto_import: document.querySelector("#autoImport")?.value || "false",
       auto_analysis: document.querySelector("#autoAnalysis")?.value || "false",
       frame_sample_rate: document.querySelector("#frameSampleRate")?.value || "standard",
       detector_sensitivity: document.querySelector("#detectorSensitivity")?.value || "normal",
+      enemy_detector_command: document.querySelector("#enemyDetectorCommand")?.value || "",
       local_ai_provider: document.querySelector("#localAiProvider")?.value || "custom-command",
       local_ai_model: document.querySelector("#localAiModel")?.value || "",
       local_ai_base_url: document.querySelector("#localAiBaseUrl")?.value || "",
@@ -942,7 +1004,8 @@ async function analyzeMatch(id) {
 async function suggestDeaths(id) {
   setStatus(`Scanning match #${id} for death candidates...`);
   const payload = await api(`/api/matches/${id}/suggest-deaths`, { method: "POST" });
-  setStatus(payload.message);
+  const detector = payload.detector || {};
+  setStatus(payload.message, { state: detector.warning ? "error" : "idle" });
   await loadReport(id);
 }
 
@@ -1096,7 +1159,7 @@ async function aiReview(deathId) {
 }
 
 async function localAiReview(deathId, options = {}) {
-  setStatus(`Clip Coach is reviewing death #${deathId}. Sending frames to your local model...`, { state: "busy" });
+  setStatus(`Clip Coach death #${deathId}: extracting frames, reading HUD/context with the VALORANT KB, then asking the local model...`, { state: "busy", progress: 35 });
   const payload = await api(`/api/deaths/${deathId}/local-ai-review`, { method: "POST" });
   setStatus(payload.message || `Clip Coach review ready for death #${deathId}.`);
   if (options.reload !== false && currentMatchId) await loadReport(currentMatchId);
@@ -1104,7 +1167,7 @@ async function localAiReview(deathId, options = {}) {
 }
 
 async function coachClip(deathId) {
-  setStatus(`Coach is reviewing death #${deathId} with local vision and saved patterns...`, { state: "busy" });
+  setStatus(`Coach death #${deathId}: local context extraction and clip review running...`, { state: "busy", progress: 25 });
   let localError = "";
   try {
     await localAiReview(deathId, { reload: false });
@@ -1201,6 +1264,39 @@ async function saveAdviceFeedback(adviceId, verdict) {
   });
   setStatus(`Advice ${verdict}.`);
   await loadCoach();
+  if (currentMatchId) await loadReport(currentMatchId);
+}
+
+async function saveClipReviewFeedback(button) {
+  const card = button.closest(".death-card");
+  const note = card?.querySelector('[data-field="clip_review_feedback_note"]')?.value || "";
+  const deathId = button.dataset.id;
+  await api(`/api/deaths/${deathId}/review-feedback`, {
+    method: "POST",
+    body: JSON.stringify({ verdict: button.dataset.verdict, note }),
+  });
+  setStatus(`Clip Coach feedback saved: ${button.dataset.verdict}.`);
+  await loadCoach();
+  if (currentMatchId) await loadReport(currentMatchId);
+}
+
+async function saveClipTrainingLabel(button) {
+  const card = button.closest(".death-card");
+  const deathId = button.dataset.id;
+  const read = (field) => card?.querySelector(`[data-field="${field}"]`)?.value || "";
+  await api(`/api/deaths/${deathId}/training-label`, {
+    method: "POST",
+    body: JSON.stringify({
+      enemy_visible_frame: read("training_enemy_visible_frame"),
+      first_contact_frame: read("training_first_contact_frame"),
+      death_frame: read("training_death_frame"),
+      crosshair_issue: read("training_crosshair_issue"),
+      correct_mistake_label: read("training_correct_mistake_label"),
+      notes: read("training_notes"),
+    }),
+  });
+  setStatus("Coach training label saved. Future review queue ranking and prompts will use it.");
+  await Promise.all([loadCoach(), loadAutomation()]);
   if (currentMatchId) await loadReport(currentMatchId);
 }
 
@@ -1407,6 +1503,8 @@ function renderCoach(coach) {
   const outcomes = coach.outcomes || {};
   const coachV2 = coach.coach_v2 || {};
   const weekly = coachV2.weekly_focus || {};
+  const training = coachV2.training_labels || {};
+  const detector = coachV2.detector_profile || {};
   const progress = plan.progress || {};
   const agents = (profile.main_agents || []).join(", ");
   const goalBlock = goal
@@ -1464,6 +1562,19 @@ function renderCoach(coach) {
       </ul>
       <p class="muted">Memory strength ${escapeHtml(coachV2.memory_strength || 0)} · primary focus ${escapeHtml(weekly.primary_focus || "none")}</p>
     </details>
+    <details class="coach-plan fold-panel" open>
+      <summary>Training Dashboard</summary>
+      <div class="coach-progress">
+        <span>Training clips: ${Number(training.count || 0)}</span>
+        <span>Frame-labeled: ${Number(training.frame_labeled || 0)}</span>
+        <span>Crosshair confirmed: ${Number(training.crosshair_issue_yes || 0)}</span>
+        <span>Detector: ${escapeHtml(detector.learning_state || "warming_up")}</span>
+      </div>
+      <p class="muted">${escapeHtml(detector.summary || "Save training labels from Clip Coach reviews to personalize visual detection.")}</p>
+      <ul class="compact-list">
+        ${(training.top_labels || []).slice(0, 6).map((item) => `<li>${escapeHtml(Array.isArray(item) ? item[0] : item.label)} x${escapeHtml(Array.isArray(item) ? item[1] : item.count)}</li>`).join("") || "<li>No corrected mistake labels yet.</li>"}
+      </ul>
+    </details>
     <details class="coach-plan fold-panel">
       <summary>Weighted Patterns</summary>
       <ul class="compact-list">
@@ -1479,6 +1590,8 @@ function renderCoach(coach) {
         <span>Updated: ${escapeHtml(persistentMemory.persistent_updated_at || "not yet")}</span>
       </div>
       ${renderMemoryPatterns(persistentMemory.top_patterns || [])}
+      ${renderMemoryPatterns(persistentMemory.correction_patterns || [], "Corrections")}
+      ${renderMemoryPatterns(persistentMemory.perception_patterns || [], "Perception")}
       <ul class="compact-list">
         ${(memory.priorities || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
       </ul>
@@ -1503,9 +1616,10 @@ function renderCoach(coach) {
   `;
 }
 
-function renderMemoryPatterns(patterns) {
+function renderMemoryPatterns(patterns, title = "") {
   if (!patterns.length) return "";
   return `
+    ${title ? `<p class="muted">${escapeHtml(title)}</p>` : ""}
     <div class="coach-progress">
       ${patterns.slice(0, 4).map((item) => `<span>${escapeHtml(item.label)} x${Number(item.count || 0)}</span>`).join("")}
     </div>
@@ -1563,6 +1677,7 @@ function renderReport(report) {
   const priorities = renderCoachPriorities(report, coachMoments);
   const memoryStrip = renderCoachMemoryStrip(latestCoachDashboard);
   const playerStatus = renderPlayerStatusReport(report, coachMoments);
+  const matchThemes = renderMatchThemes(report.match_themes || {});
   const manualMarkerForm = renderManualMarkerForm(match.id);
 
   els.reportView.innerHTML = `
@@ -1580,6 +1695,7 @@ function renderReport(report) {
     </section>
     ${memoryStrip}
     ${playerStatus}
+    ${matchThemes}
     ${priorities}
     ${guidedCoach}
     ${suggestions}
@@ -1658,6 +1774,8 @@ function renderPlayerStatusReport(report, coachMoments = []) {
   const causeCounts = collectDeathCauseCounts(deaths);
   const perceptionCounts = collectPerceptionCounts(deaths);
   const coachingIssueCounts = collectCoachingIssueCounts(deaths);
+  const contextCounts = collectContextCounts(deaths);
+  const reviewQualityCounts = collectReviewQualityCounts(deaths);
   const labelCounts = collectStoredLabelCounts(report);
   const phaseCounts = collectPhaseCounts(deaths);
   const roundCounts = collectRoundCounts(deaths);
@@ -1705,12 +1823,76 @@ function renderPlayerStatusReport(report, coachMoments = []) {
         ${renderStatusPanel("Death Causes From Coach Reads", causeCounts, Math.max(1, reviewedCount + localAiCount), "Generate advice or Clip Coach reviews for clearer causes.")}
         ${renderStatusPanel("Clip Perception Reads", perceptionCounts, Math.max(1, localAiCount), "Run Clip Coach to track enemy visibility, crosshair level, and peek type.")}
         ${renderStatusPanel("Coaching Issue Types", coachingIssueCounts, Math.max(1, localAiCount), "Structured Clip Coach reviews will separate utility, crosshair, positioning, and mechanics.")}
+        ${renderStatusPanel("Map / Agent / Weapon Context", contextCounts, deathCount, "Run Clip Coach or save context to identify repeated map, agent, and weapon patterns.")}
+        ${renderStatusPanel("Review Evidence Quality", reviewQualityCounts, Math.max(1, localAiCount), "Clip Coach reviews will be scored by visible evidence and segment coverage.")}
         ${renderStatusPanel("Deaths By Round Phase", phaseCounts, deathCount, "Round phase uses reconstructed round timing when available.")}
         ${renderStatusPanel("Deaths By Round", roundCounts, deathCount, "Estimated rounds are marked until scoreboard OCR/manual save confirms them.")}
       </div>
       ${coachMoments.length ? `<p class="muted">${coachMoments.length} whole-VOD coach moment(s) found outside death markers.</p>` : ""}
     </section>
   `;
+}
+
+function renderMatchThemes(themes) {
+  if (!themes || !Object.keys(themes).length) return "";
+  const chips = (themes.top_mistakes || []).map((item) => `<span class="tag">${escapeHtml(item.label)} ${escapeHtml(item.count)}</span>`).join("");
+  const dimensions = (themes.top_dimensions || []).map((item) => `<span class="tag">${escapeHtml(item.label)} ${escapeHtml(item.count)}</span>`).join("");
+  const context = (themes.context_patterns || []).slice(0, 4).map((item) => `<li>${escapeHtml(item.label)} · ${escapeHtml(item.count)}</li>`).join("");
+  const rounds = (themes.round_patterns || []).slice(0, 4).map((item) => `<li>${escapeHtml(item.label)} · ${escapeHtml(item.count)}</li>`).join("");
+  const practice = (themes.practice_plan || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const evidence = (themes.evidence_examples || []).slice(0, 4).map((item) => `
+    <li>
+      ${item.timestamp !== undefined && item.timestamp !== null ? `<button class="timeline-jump" data-action="jump" data-ts="${escapeAttr(item.timestamp)}">${escapeHtml(formatTs(item.timestamp))}</button>` : ""}
+      <strong>${escapeHtml(item.event || "evidence")}</strong>
+      <span>${escapeHtml(shortenText(item.evidence || "", 180))}</span>
+    </li>
+  `).join("");
+  return `
+    <section class="match-themes-panel">
+      <div class="review-head">
+        <h3>Match Themes</h3>
+        <span class="muted">${Math.round(Number(themes.confidence || 0) * 100)}%</span>
+      </div>
+      <p>${escapeHtml(themes.summary || "")}</p>
+      <div class="tag-row">${chips || '<span class="tag">learning</span>'} ${dimensions}</div>
+      <div class="player-graph-grid">
+        <article class="status-panel">
+          <div class="analysis-head"><strong>Context Pattern</strong><span>${(themes.context_patterns || []).length}</span></div>
+          <ul class="compact-list">${context || "<li>Run Clip Coach or save context for map/agent/weapon patterns.</li>"}</ul>
+        </article>
+        <article class="status-panel">
+          <div class="analysis-head"><strong>Round Pattern</strong><span>${(themes.round_patterns || []).length}</span></div>
+          <ul class="compact-list">${rounds || "<li>Round pattern needs OCR/manual round data.</li>"}</ul>
+        </article>
+      </div>
+      <details class="advanced-actions" open>
+        <summary>Next Practice Plan</summary>
+        <ul class="compact-list">${practice || "<li>Review more clips to build a practice plan.</li>"}</ul>
+      </details>
+      ${evidence ? `<details class="advanced-actions"><summary>Evidence Examples</summary><ul class="compact-list">${evidence}</ul></details>` : ""}
+    </section>
+  `;
+}
+
+function collectContextCounts(deaths) {
+  const counts = {};
+  for (const death of deaths || []) {
+    const fields = death.match_context?.fields || {};
+    if (fields.map?.value) addCount(counts, `map ${fields.map.value}`, 1);
+    if (fields.agent?.value) addCount(counts, `agent ${fields.agent.value}`, 1);
+    if (fields.weapon?.value) addCount(counts, `weapon ${fields.weapon.value}`, 1);
+  }
+  return counts;
+}
+
+function collectReviewQualityCounts(deaths) {
+  const counts = {};
+  for (const death of deaths || []) {
+    const quality = death.local_ai_review?.payload?.review_quality || {};
+    if (!death.local_ai_review) continue;
+    addCount(counts, quality.summary || "unscored", 1);
+  }
+  return counts;
 }
 
 function collectPerceptionCounts(deaths) {
@@ -2310,6 +2492,77 @@ function renderMatchReview(review) {
   `;
 }
 
+function renderMatchContextPanel(context, death) {
+  const fields = context.fields || {};
+  const field = (key) => fields[key] || { value: "", known: false, source: "unknown", confidence: 0 };
+  const chips = ["map", "agent", "round", "side", "weapon", "location", "spike_state", "team_counts"].map((key) => {
+    const item = field(key);
+    const label = key.replaceAll("_", " ");
+    const value = item.known ? item.value : "unknown";
+    const state = item.known ? "known" : "unknown";
+    return `
+      <span class="context-chip ${state}" title="${escapeAttr(item.source || "unknown")} · ${Math.round(Number(item.confidence || 0) * 100)}%">
+        <b>${escapeHtml(label)}</b>
+        ${escapeHtml(value)}
+      </span>
+    `;
+  }).join("");
+  const manual = context.manual_correction || {};
+  const extraction = renderContextExtraction(context.context_extraction || {});
+  return `
+    <details class="match-context-panel ${context.ready_for_knowledge ? "ready" : "needs-work"}" ${context.ready_for_knowledge ? "" : "open"}>
+      <summary>
+        <span>Match Context</span>
+        <strong>${escapeHtml(context.known_count || 0)}/${escapeHtml(context.total_count || 0)} known</strong>
+      </summary>
+      <p class="muted">${escapeHtml(context.summary || "Correct map, agent, and round to make knowledge retrieval specific.")}</p>
+      <div class="context-chip-row">${chips}</div>
+      ${extraction}
+      <details class="context-editor-panel" ${context.ready_for_knowledge ? "" : "open"}>
+        <summary>Correct context</summary>
+        <div class="context-editor">
+          <label>Map <input data-field="context_map" type="text" value="${escapeAttr(field("map").value || manual.map || "")}" placeholder="Ascent" /></label>
+          <label>Agent <input data-field="context_agent" type="text" value="${escapeAttr(field("agent").value || manual.agent || "")}" placeholder="Jett" /></label>
+          <label>Round <input data-field="context_round_number" type="number" min="1" max="30" value="${escapeAttr(manual.round_number || death.round_number || death.display_round_number || "")}" /></label>
+          <label>Side <input data-field="context_side" type="text" value="${escapeAttr(field("side").value || manual.side || "")}" placeholder="attack / defense" /></label>
+          <label>Weapon <input data-field="context_weapon" type="text" value="${escapeAttr(field("weapon").value || manual.weapon || "")}" placeholder="Vandal" /></label>
+          <label>Location <input data-field="context_location" type="text" value="${escapeAttr(field("location").value || manual.location || "")}" placeholder="A Main, Mid, B Site" /></label>
+          <label>Spike <input data-field="context_spike_state" type="text" value="${escapeAttr(field("spike_state").value || manual.spike_state || "")}" placeholder="pre-plant / planted / retake" /></label>
+          <label>Alive <input data-field="context_team_counts" type="text" value="${escapeAttr(field("team_counts").value || manual.team_counts || "")}" placeholder="3v4" /></label>
+          <label class="wide">Context note <input data-field="context_notes" type="text" value="${escapeAttr(manual.notes || "")}" placeholder="Any correction the coach should trust" /></label>
+          <button class="secondary" data-action="save-context" data-id="${death.id}">Save Context</button>
+        </div>
+      </details>
+    </details>
+  `;
+}
+
+function renderContextExtraction(extraction) {
+  if (!extraction || !Object.keys(extraction).length) return "";
+  const resolved = extraction.resolved || {};
+  const auto = extraction.auto_corrections || {};
+  const rows = ["map", "agent", "round_number", "side", "weapon", "location", "spike_state", "team_counts"].map((key) => {
+    const item = resolved[key] || {};
+    const value = item.value || "";
+    if (!value) return "";
+    const applied = Object.prototype.hasOwnProperty.call(auto, key) ? "applied" : item.blocked_by_manual ? "manual kept" : item.status || "candidate";
+    return `<li><strong>${escapeHtml(key.replaceAll("_", " "))}:</strong> ${escapeHtml(value)} · ${Math.round(Number(item.confidence || 0) * 100)}% · ${escapeHtml(applied)}${item.evidence ? ` <span class="muted">(${escapeHtml(shortenText(item.evidence, 120))})</span>` : ""}</li>`;
+  }).filter(Boolean).join("");
+  const visible = (extraction.visible_text || []).slice(0, 5).map((item) => `<li>${escapeHtml(shortenText(item, 140))}</li>`).join("");
+  if (!rows && !visible) return "";
+  return `
+    <details class="context-extraction">
+      <summary>
+        <span>Auto extraction</span>
+        <strong>${escapeHtml(extraction.status || "captured")}</strong>
+      </summary>
+      <p class="muted">${escapeHtml(extraction.summary || "KB-constrained context pass completed.")}</p>
+      ${rows ? `<ul class="compact-list">${rows}</ul>` : ""}
+      ${visible ? `<p class="muted">Visible text</p><ul class="compact-list">${visible}</ul>` : ""}
+    </details>
+  `;
+}
+
 function renderDeathCard(death) {
   const labels = (death.mistake_labels || []).join(", ");
   const clip = death.clip_path
@@ -2321,6 +2574,7 @@ function renderDeathCard(death) {
   const keyframes = renderKeyframes(death.keyframes);
   const localAi = renderLocalAiReview(death.local_ai_review, death);
   const annotations = renderAnnotations(death.annotations || []);
+  const contextPanel = renderMatchContextPanel(death.match_context || {}, death);
   return `
     <article class="death-card" data-death-id="${death.id}">
       <div class="death-card-header">
@@ -2332,6 +2586,7 @@ function renderDeathCard(death) {
         <button data-action="coach-clip" data-id="${death.id}">${death.advice || death.local_ai_review ? "Refresh Coach" : "Coach This Clip"}</button>
       </div>
       ${death.notes ? `<p class="death-note">${escapeHtml(shortenText(death.notes, 180))}</p>` : ""}
+      ${contextPanel}
       ${advice}
       <details class="advanced-actions">
         <summary>Edit marker and advanced tools</summary>
@@ -2431,8 +2686,11 @@ function renderLocalAiReview(row, death = {}) {
     return "";
   }
   const payload = row.payload;
+  const feedback = death.clip_review_feedback?.payload || {};
+  const trainingLabel = death.clip_training_label?.payload || {};
   const perception = payload.perception || {};
   const coaching = payload.coaching || {};
+  const quality = payload.review_quality || {};
   const labels = (payload.labels || []).map((label) => `<span class="tag">${escapeHtml(label)}</span>`).join(" ");
   const evidence = (payload.visible_evidence || payload.evidence || [])
     .filter(Boolean)
@@ -2449,23 +2707,237 @@ function renderLocalAiReview(row, death = {}) {
     <div class="analysis-card">
       <div class="analysis-head">
         <strong>Clip Coach Review</strong>
-        <span>${escapeHtml(payload.status || "captured")} · ${Math.round(Number(payload.confidence || 0) * 100)}%</span>
+        <span>${escapeHtml(quality.summary || payload.status || "captured")} · ${Math.round(Number(payload.confidence || 0) * 100)}%</span>
       </div>
       <p>${escapeHtml(payload.summary || "")}</p>
       ${memoryFocus ? `<p><strong>Coach memory context:</strong> ${escapeHtml(memoryFocus)}</p>` : ""}
-      ${renderPerceptionRead(perception)}
       ${renderCoachingRead(coaching, payload)}
-      ${evidence ? `<p><strong>Visible evidence</strong></p><ul class="compact-list">${evidence}</ul>` : ""}
-      ${payload.extracted_text ? `<p><strong>Extracted text:</strong> ${escapeHtml(payload.extracted_text)}</p>` : ""}
-      ${payload.scoreboard ? `<p><strong>Scoreboard:</strong> ${escapeHtml(JSON.stringify(payload.scoreboard))}</p>` : ""}
       ${payload.better_play ? `<p><strong>Better play:</strong> ${escapeHtml(payload.better_play)}</p>` : ""}
       ${payload.drill ? `<p><strong>Drill:</strong> ${escapeHtml(payload.drill)}</p>` : ""}
       <div>${labels}</div>
+      ${renderEvidenceTimeline(payload.evidence_timeline || [])}
+      ${renderClaimConfidence(payload.claim_confidence || {})}
+      ${renderMultiPassReview(payload.multi_pass || {}, payload.multi_pass_reviews || [])}
+      <details class="advanced-actions">
+        <summary>Segment reads and raw evidence</summary>
+        ${renderReviewPipeline(payload.review_pipeline || {})}
+        ${renderDeterministicSignals(payload.deterministic_signals || {})}
+        ${renderSegmentReviews(payload.segment_reviews || [])}
+        ${renderPerceptionRead(perception)}
+        ${evidence ? `<p><strong>Visible evidence</strong></p><ul class="compact-list">${evidence}</ul>` : ""}
+        ${payload.extracted_text ? `<p><strong>Extracted text:</strong> ${escapeHtml(payload.extracted_text)}</p>` : ""}
+        ${payload.scoreboard ? `<p><strong>Scoreboard:</strong> ${escapeHtml(JSON.stringify(payload.scoreboard))}</p>` : ""}
+      </details>
       <div class="row local-ai-actions">
         <button class="secondary" data-action="fill-review-draft" data-id="${death.id || ""}" data-labels="${escapeAttr(draftLabels)}" data-note="${escapeAttr(draftNote)}">Fill Review Draft</button>
+        <input data-field="clip_review_feedback_note" type="text" value="${escapeAttr(feedback.note || "")}" placeholder="Optional coach feedback" />
+        <button class="secondary" data-action="clip-review-feedback" data-id="${death.id || ""}" data-verdict="useful">Useful</button>
+        <button class="secondary" data-action="clip-review-feedback" data-id="${death.id || ""}" data-verdict="accurate">Accurate</button>
+        <button class="danger" data-action="clip-review-feedback" data-id="${death.id || ""}" data-verdict="wrong">Wrong</button>
+        ${feedback.verdict ? `<span class="muted">Marked ${escapeHtml(feedback.verdict)}</span>` : ""}
       </div>
+      ${renderClipTrainingLabel(death, trainingLabel)}
     </div>
   `;
+}
+
+function renderMultiPassReview(meta, reviews) {
+  if (!reviews.length && !meta.enabled) return "";
+  const rows = (reviews || []).map((review) => `
+    <li>
+      <strong>${escapeHtml(review.pass_label || review.pass_id || "vision pass")}</strong>
+      <span class="muted">${escapeHtml(review.frame_range || "")} · ${Math.round(Number(review.confidence || 0) * 100)}%</span>
+      <p>${escapeHtml(shortenText(review.summary || "", 220))}</p>
+    </li>
+  `).join("");
+  return `
+    <details class="multi-pass-review">
+      <summary>
+        <span>Local Vision Multi-Pass</span>
+        <strong>${escapeHtml(meta.pass_count || reviews.length || 0)} pass(es)</strong>
+      </summary>
+      <ul class="compact-list">${rows || "<li>Pass metadata saved, no per-pass text returned.</li>"}</ul>
+    </details>
+  `;
+}
+
+function renderClipTrainingLabel(death, label) {
+  const suggestedContact = suggestedContactFrame(death.local_ai_review?.payload || {});
+  return `
+    <details class="training-label-card">
+      <summary>
+        <span>Teach Coach From This Clip</span>
+        <strong>${label.created_at ? "saved" : "optional"}</strong>
+      </summary>
+      <p class="muted">Use this when the model missed the enemy, first contact, death frame, or mistake type. It stays local in the training-label history.</p>
+      <div class="training-label-grid">
+        <label>Enemy frame <input data-field="training_enemy_visible_frame" type="number" min="0" step="1" value="${escapeAttr(label.enemy_visible_frame ?? "")}" placeholder="frame #" /></label>
+        <label>Contact frame <input data-field="training_first_contact_frame" type="number" min="0" step="1" value="${escapeAttr(label.first_contact_frame ?? suggestedContact ?? "")}" placeholder="frame #" /></label>
+        <label>Death frame <input data-field="training_death_frame" type="number" min="0" step="1" value="${escapeAttr(label.death_frame ?? "")}" placeholder="frame #" /></label>
+        <label>Crosshair issue
+          <select data-field="training_crosshair_issue">
+            <option value="" ${label.crosshair_issue === undefined || label.crosshair_issue === null ? "selected" : ""}>unknown</option>
+            <option value="true" ${label.crosshair_issue === true ? "selected" : ""}>yes</option>
+            <option value="false" ${label.crosshair_issue === false ? "selected" : ""}>no</option>
+          </select>
+        </label>
+        <label class="wide">Correct mistake <input data-field="training_correct_mistake_label" type="text" value="${escapeAttr(label.correct_mistake_label || "")}" placeholder="crosshair too low, dry swing, late trade..." /></label>
+        <label class="wide">What should the coach learn? <input data-field="training_notes" type="text" value="${escapeAttr(label.notes || "")}" placeholder="Specific correction for this clip" /></label>
+        <button class="secondary" data-action="save-training-label" data-id="${death.id || ""}">Save Training Label</button>
+        ${label.created_at ? `<span class="muted">Last saved ${escapeHtml(label.created_at)}</span>` : ""}
+      </div>
+    </details>
+  `;
+}
+
+function suggestedContactFrame(payload) {
+  const timeline = payload.deterministic_signals?.visual?.timeline || [];
+  const contact = timeline.find((item) => String(item.class || "").includes("contact"));
+  return contact?.frame ?? "";
+}
+
+function renderDeterministicSignals(signals) {
+  const visual = signals.visual || {};
+  const ocr = signals.ocr || {};
+  if (!Object.keys(visual).length && !Object.keys(ocr).length) return "";
+  const classifier = visual.frame_classifier || {};
+  const contact = visual.crosshair_to_contact || {};
+  const detector = visual.detector_profile || {};
+  const structuredOcr = ocr.structured || {};
+  const parsedHud = structuredOcr.parsed || structuredOcr.parsed_hud || structuredOcr.hints || {};
+  const rows = [
+    visual.summary ? `<li><strong>Visual:</strong> ${escapeHtml(visual.summary)}</li>` : "",
+    detector.summary ? `<li><strong>Adaptive detector:</strong> ${escapeHtml(detector.summary)}</li>` : "",
+    classifier.summary ? `<li><strong>Frame classes:</strong> ${escapeHtml(classifier.summary)}${renderClassCounts(classifier.counts || {})}</li>` : "",
+    contact.summary ? `<li><strong>Aim vs contact:</strong> ${escapeHtml(contact.summary)}</li>` : "",
+    visual.crosshair_score?.summary ? `<li><strong>Crosshair:</strong> ${escapeHtml(visual.crosshair_score.summary)}</li>` : "",
+    visual.movement_read?.summary ? `<li><strong>Movement:</strong> ${escapeHtml(visual.movement_read.summary)}</li>` : "",
+    visual.minimap_read?.summary ? `<li><strong>Minimap:</strong> ${escapeHtml(visual.minimap_read.summary)}</li>` : "",
+    ocr.summary ? `<li><strong>OCR:</strong> ${escapeHtml(ocr.summary)}</li>` : "",
+    renderParsedHudRow(parsedHud),
+  ].filter(Boolean).join("");
+  return rows ? `<p><strong>Local detectors</strong></p><ul class="compact-list">${rows}</ul>${renderClipSignalTimeline(visual.timeline || [])}` : "";
+}
+
+function renderClipSignalTimeline(timeline) {
+  const rows = (timeline || []).slice(0, 90);
+  if (!rows.length) return "";
+  const firstTs = rows.find((item) => item.timestamp !== undefined)?.timestamp || 0;
+  const lastTs = rows.slice().reverse().find((item) => item.timestamp !== undefined)?.timestamp || firstTs + 1;
+  const span = Math.max(1, Number(lastTs) - Number(firstTs));
+  const markers = rows.map((item) => {
+    const left = Math.max(0, Math.min(100, ((Number(item.timestamp || firstTs) - Number(firstTs)) / span) * 100));
+    const cls = frameClassCss(item.class);
+    const title = `${item.class || "frame"} · frame ${item.frame ?? ""} · contact ${item.contact_score ?? ""} · death ${item.death_score ?? ""}`;
+    return `<button class="clip-signal-marker ${cls}" style="left:${left}%" title="${escapeAttr(title)}" data-action="jump" data-ts="${escapeAttr(item.timestamp || firstTs)}"></button>`;
+  }).join("");
+  const contactRows = rows
+    .filter((item) => String(item.class || "").includes("contact") || Number(item.death_score || 0) >= 0.45)
+    .slice(0, 8)
+    .map((item) => `
+      <li>
+        <button class="timeline-jump" data-action="jump" data-ts="${escapeAttr(item.timestamp || 0)}">${escapeHtml(formatTs(item.timestamp || 0))}</button>
+        <strong>${escapeHtml((item.class || "frame").replaceAll("_", " "))}</strong>
+        <span>frame ${escapeHtml(item.frame ?? "")} · contact ${escapeHtml(item.contact_score ?? "0")} · death ${escapeHtml(item.death_score ?? "0")}</span>
+      </li>
+    `).join("");
+  return `
+    <details class="clip-signal-timeline">
+      <summary>Frame Signal Timeline</summary>
+      <div class="clip-signal-track">${markers}</div>
+      <div class="timeline-legend">
+        <span><i class="signal-contact"></i>contact</span>
+        <span><i class="signal-damage"></i>damage/death</span>
+        <span><i class="signal-empty"></i>low signal</span>
+      </div>
+      ${contactRows ? `<ul class="compact-list">${contactRows}</ul>` : `<p class="muted">No contact/death frames crossed the display threshold.</p>`}
+    </details>
+  `;
+}
+
+function frameClassCss(value) {
+  const text = String(value || "");
+  if (text.includes("death") || text.includes("damage")) return "damage";
+  if (text.includes("contact")) return "contact";
+  return "empty";
+}
+
+function renderClassCounts(counts) {
+  const rows = Object.entries(counts || {})
+    .filter(([, value]) => Number(value) > 0)
+    .map(([key, value]) => `${key.replaceAll("_", " ")} ${value}`)
+    .join(", ");
+  return rows ? ` <span class="muted">(${escapeHtml(rows)})</span>` : "";
+}
+
+function renderParsedHudRow(parsedHud) {
+  const items = [
+    ["Score", parsedHud.score],
+    ["Round", parsedHud.round_number_from_score || parsedHud.round_number],
+    ["Timer", parsedHud.round_timer],
+    ["HP", parsedHud.health],
+    ["Ammo", parsedHud.ammo],
+    ["Weapon", parsedHud.weapon],
+    ["Spike", parsedHud.spike_state],
+  ].filter(([, value]) => value !== undefined && value !== null && String(value).trim());
+  if (!items.length) return "";
+  return `<li><strong>HUD parsed:</strong> ${items.map(([key, value]) => `${escapeHtml(key)} ${escapeHtml(formatPerceptionValue(value))}`).join(" · ")}</li>`;
+}
+
+function renderReviewPipeline(pipeline) {
+  const steps = pipeline.steps || [];
+  if (!steps.length) return "";
+  const rows = steps.map((step) => `
+    <li>
+      <strong>${escapeHtml(step.label || step.id || "")}</strong>
+      <span class="muted">${escapeHtml(step.status || "")}${step.count !== undefined ? ` · ${escapeHtml(step.count)}` : ""}</span>
+      ${step.summary ? `<p>${escapeHtml(shortenText(step.summary, 160))}</p>` : ""}
+    </li>
+  `).join("");
+  return `<p><strong>Pipeline</strong></p><ul class="compact-list">${rows}</ul>`;
+}
+
+function renderEvidenceTimeline(items) {
+  const rows = (items || []).slice(0, 8).map((item) => {
+    const ts = item.video_timestamp !== undefined && item.video_timestamp !== null && item.video_timestamp !== ""
+      ? `<button class="timeline-jump" data-action="jump" data-ts="${escapeAttr(item.video_timestamp)}">${escapeHtml(formatTs(item.video_timestamp))}</button>`
+      : `<span class="muted">${escapeHtml(item.time || item.frame || "")}</span>`;
+    return `
+      <li>
+        ${ts}
+        <strong>${escapeHtml(titleCase(item.event || item.segment_id || "evidence"))}</strong>
+        <span>${escapeHtml(item.evidence || "")}</span>
+        <em>${Math.round(Number(item.claim_confidence || 0) * 100)}%</em>
+      </li>
+    `;
+  }).join("");
+  if (!rows) return "";
+  return `
+    <div class="evidence-timeline">
+      <strong>Evidence Timeline</strong>
+      <ol>${rows}</ol>
+    </div>
+  `;
+}
+
+function renderSegmentReviews(items) {
+  const rows = (items || []).map((item) => `
+    <li>
+      <strong>${escapeHtml(item.label || item.segment_id || "segment")}</strong>
+      <span class="muted">${escapeHtml(item.frame_range || "")} · ${Math.round(Number(item.confidence || 0) * 100)}%</span>
+      <p>${escapeHtml(item.summary || "")}</p>
+      ${item.mistake ? `<p><strong>Issue:</strong> ${escapeHtml(item.mistake)}</p>` : ""}
+    </li>
+  `).join("");
+  return rows ? `<ul class="compact-list segment-review-list">${rows}</ul>` : `<p class="muted">No segment reads returned.</p>`;
+}
+
+function renderClaimConfidence(claims) {
+  const rows = Object.entries(claims || {})
+    .filter(([, value]) => Number(value) > 0)
+    .map(([key, value]) => `<span title="${escapeAttr(key)}">${escapeHtml(key.replaceAll("_", " "))} ${Math.round(Number(value || 0) * 100)}%</span>`)
+    .join("");
+  return rows ? `<div class="coach-progress claim-confidence">${rows}</div>` : "";
 }
 
 function renderPerceptionRead(perception) {
@@ -2703,6 +3175,29 @@ async function saveDeath(button) {
   await loadTrends();
 }
 
+async function saveDeathContext(button) {
+  const card = button.closest(".death-card");
+  const id = button.dataset.id;
+  const read = (field) => card.querySelector(`[data-field="${field}"]`)?.value || "";
+  await api(`/api/deaths/${id}/context`, {
+    method: "POST",
+    body: JSON.stringify({
+      map: read("context_map"),
+      agent: read("context_agent"),
+      round_number: read("context_round_number"),
+      side: read("context_side"),
+      weapon: read("context_weapon"),
+      location: read("context_location"),
+      spike_state: read("context_spike_state"),
+      team_counts: read("context_team_counts"),
+      notes: read("context_notes"),
+      confidence: 1,
+    }),
+  });
+  setStatus("Match context saved. Knowledge retrieval will use this correction.");
+  await Promise.all([loadReport(currentMatchId), loadMatches(), loadAutomation()]);
+}
+
 async function saveDeathCorrection(button) {
   const card = button.closest(".death-card");
   await api("/api/corrections", {
@@ -2911,6 +3406,8 @@ els.automationView.addEventListener("click", (event) => {
   if (action === "set-local-ai-window") setLocalAiWindow(button.dataset.window);
   if (action === "test-local-ai") testLocalAiConfig().catch((err) => setStatus(err.message));
   if (action === "save-local-ai") saveLocalAiConfig().catch((err) => setStatus(err.message));
+  if (action === "rebuild-knowledge") rebuildKnowledgeBase().catch((err) => setStatus(err.message));
+  if (action === "search-knowledge") searchKnowledgeBase().catch((err) => setStatus(err.message));
   if (action === "load-prompt") loadPromptEditor();
   if (action === "save-prompt") savePromptTemplate().catch((err) => setStatus(err.message));
   if (action === "apply-detector-tuning") applyDetectorTuning().catch((err) => setStatus(err.message));
@@ -2980,8 +3477,11 @@ els.reportView.addEventListener("click", (event) => {
   if (action === "ai-review") aiReview(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "local-ai-review") localAiReview(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "fill-review-draft") fillReviewDraft(button);
+  if (action === "clip-review-feedback") saveClipReviewFeedback(button).catch((err) => setStatus(err.message));
+  if (action === "save-training-label") saveClipTrainingLabel(button).catch((err) => setStatus(err.message));
   if (action === "advice-feedback") saveAdviceFeedback(button.dataset.id, button.dataset.verdict).catch((err) => setStatus(err.message));
   if (action === "save-death") saveDeath(button).catch((err) => setStatus(err.message));
+  if (action === "save-context") saveDeathContext(button).catch((err) => setStatus(err.message));
   if (action === "save-correction") saveDeathCorrection(button).catch((err) => setStatus(err.message));
   if (action === "save-annotation") saveClipAnnotation(button).catch((err) => setStatus(err.message));
   if (action === "set-annotation-time") setAnnotationTime(button);

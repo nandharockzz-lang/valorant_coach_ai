@@ -1,17 +1,19 @@
 import shutil
 import subprocess
 import sys
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter, ImageOps
 
 from .db import Database
 
 
 FRAME_DIR_NAME = "frames"
+DEFAULT_PLAYER_NAME = "SicaJR"
 
 
 @dataclass
@@ -71,10 +73,13 @@ def suggest_deaths(db: Database, match_id: int, work_dir: Path) -> Dict[str, Any
 
     frame_dir = work_dir / FRAME_DIR_NAME / f"match-{match_id}"
     cleaned = db.cleanup_pending_death_suggestions(match_id)
-    frames = extract_scan_frames(ffmpeg, video_path, frame_dir, fps=scan_fps(db))
+    fps = scan_fps(db)
+    frames = extract_scan_frames(ffmpeg, video_path, frame_dir, fps=fps)
     feedback = db.detector_feedback_summary()
     feedback["sensitivity"] = db.get_setting("detector_sensitivity", "normal")
-    suggestions = analyze_frames(frames, db.get_calibration(), feedback)
+    player_name = str(db.get_setting("player_name", DEFAULT_PLAYER_NAME) or DEFAULT_PLAYER_NAME).strip()
+    ocr_available = bool(tesseract_path())
+    suggestions = analyze_frames(frames, db.get_calibration(), feedback, player_name=player_name, evidence_dir=frame_dir / "evidence", fps=fps)
     saved = []
     skipped = 0
     seen_ids = set()
@@ -97,7 +102,18 @@ def suggest_deaths(db: Database, match_id: int, work_dir: Path) -> Dict[str, Any
     message = f"Found {len(saved)} new suggested death marker(s)."
     if skipped or cleaned:
         message += f" Skipped/cleaned {skipped + cleaned} duplicate or already-reviewed candidate(s)."
-    return {"ok": True, "message": message, "suggestions": saved, "skipped_duplicates": skipped + cleaned}
+    detector = death_detector_summary(saved, player_name, ocr_available)
+    if detector["warning"]:
+        message += f" {detector['warning']}"
+    else:
+        message += f" {detector['message']}"
+    return {
+        "ok": True,
+        "message": message,
+        "suggestions": saved,
+        "skipped_duplicates": skipped + cleaned,
+        "detector": detector,
+    }
 
 
 def extract_scan_frames(ffmpeg: str, video_path: Path, frame_dir: Path, fps: str = "1") -> List[Path]:
@@ -125,16 +141,42 @@ def extract_scan_frames(ffmpeg: str, video_path: Path, frame_dir: Path, fps: str
     return sorted(frame_dir.glob("scan-*.jpg"))
 
 
+def sample_interval_seconds(fps: str) -> float:
+    value = str(fps or "1").strip()
+    if "/" in value:
+        left, right = value.split("/", 1)
+        try:
+            numerator = float(left)
+            denominator = float(right)
+            if numerator > 0 and denominator > 0:
+                return denominator / numerator
+        except ValueError:
+            return 1.0
+    try:
+        number = float(value)
+    except ValueError:
+        return 1.0
+    if number <= 0:
+        return 1.0
+    return 1.0 / number
+
+
 def analyze_frames(
     frames: List[Path],
     calibration: Optional[Dict[str, Dict[str, float]]] = None,
     feedback: Optional[Dict[str, Any]] = None,
+    player_name: str = DEFAULT_PLAYER_NAME,
+    evidence_dir: Optional[Path] = None,
+    fps: str = "1",
 ) -> List[Dict[str, Any]]:
-    timeline = build_timeline(frames, calibration)
-    return cluster_death_candidates(timeline, adaptive_death_threshold(feedback))
+    sample_interval = sample_interval_seconds(fps)
+    timeline = build_timeline(frames, calibration, sample_interval=sample_interval)
+    player_deaths = detect_player_deaths_from_hud(timeline, calibration or default_calibration(), player_name, evidence_dir)
+    generic = cluster_death_candidates(timeline, adaptive_death_threshold(feedback))
+    return merge_primary_and_fallback_death_candidates(player_deaths, generic)
 
 
-def build_timeline(frames: List[Path], calibration: Optional[Dict[str, Dict[str, float]]] = None) -> List[FrameMetrics]:
+def build_timeline(frames: List[Path], calibration: Optional[Dict[str, Dict[str, float]]] = None, sample_interval: float = 1.0) -> List[FrameMetrics]:
     timeline: List[FrameMetrics] = []
     previous: Optional[np.ndarray] = None
     previous_minimap: Optional[np.ndarray] = None
@@ -150,7 +192,7 @@ def build_timeline(frames: List[Path], calibration: Optional[Dict[str, Dict[str,
         previous = arr
         previous_minimap = minimap
         previous_crosshair = crosshair
-        timeline.append(compute_metrics(frame, float(index), arr, motion, regions, minimap_motion, crosshair_drift))
+        timeline.append(compute_metrics(frame, float(index) * sample_interval, arr, motion, regions, minimap_motion, crosshair_drift))
     return timeline
 
 
@@ -350,6 +392,208 @@ def cluster_death_candidates(metrics: List[FrameMetrics], threshold: float = 0.5
             filtered[-1] = candidate
             last_ts = candidate["timestamp"]
     return filtered
+
+
+def detect_player_deaths_from_hud(
+    timeline: List[FrameMetrics],
+    calibration: Dict[str, Dict[str, float]],
+    player_name: str,
+    evidence_dir: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    player_name = (player_name or DEFAULT_PLAYER_NAME).strip()
+    if not timeline or not player_name:
+        return []
+    tesseract = tesseract_path()
+    evidence_dir = evidence_dir or (timeline[0].path.parent / "evidence")
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    raw_hits: List[Dict[str, Any]] = []
+    for item in timeline:
+        arr = load_frame(item.path)
+        killfeed_crop = crop_region(arr, calibration.get("killfeed") or default_calibration()["killfeed"])
+        combat_crop = crop_region(arr, calibration.get("combat_report") or default_calibration()["combat_report"])
+        killfeed_text = ""
+        combat_text = ""
+        name_score = 0.0
+        if tesseract:
+            killfeed_path = save_ocr_crop(killfeed_crop, evidence_dir / f"{item.path.stem}-killfeed.png")
+            combat_path = save_ocr_crop(combat_crop, evidence_dir / f"{item.path.stem}-combat-report.png")
+            killfeed_text = run_tesseract_text(tesseract, killfeed_path, psm="6")
+            combat_text = run_tesseract_text(tesseract, combat_path, psm="6")
+            name_score = fuzzy_contains_player_name(killfeed_text, player_name)
+        else:
+            killfeed_path = ""
+            combat_path = ""
+        combat_score = max(float(item.combat_report_score or 0), combat_report_text_score(combat_text))
+        killfeed_visual = max(float(item.killfeed_red or 0), red_or_blue_score(killfeed_crop))
+        if name_score >= 0.72 and combat_score >= 0.34:
+            confidence = min(0.98, 0.55 + name_score * 0.25 + combat_score * 0.18 + min(killfeed_visual, 0.25))
+            raw_hits.append(
+                {
+                    "timestamp": item.timestamp,
+                    "confidence": round(confidence, 2),
+                    "reason": (
+                        f"Primary detector: killfeed OCR matched player '{player_name}' "
+                        f"(score {name_score:.2f}) and combat report appeared (score {combat_score:.2f}). "
+                        f"Killfeed text: {short_evidence(killfeed_text)}"
+                    ),
+                    "frame_path": str(item.path.resolve()),
+                    "metrics": {
+                        "detector": "player_name_killfeed_and_combat_report",
+                        "player_name": player_name,
+                        "name_match_score": round(name_score, 3),
+                        "combat_report_score": round(combat_score, 3),
+                        "killfeed_activity": round(killfeed_visual, 3),
+                        "killfeed_text": killfeed_text[:220],
+                        "combat_report_text": combat_text[:220],
+                        "killfeed_crop": str(killfeed_path) if killfeed_path else "",
+                        "combat_report_crop": str(combat_path) if combat_path else "",
+                    },
+                }
+            )
+    return cluster_player_death_hits(raw_hits)
+
+
+def cluster_player_death_hits(hits: List[Dict[str, Any]], gap_seconds: float = 5.0) -> List[Dict[str, Any]]:
+    if not hits:
+        return []
+    hits = sorted(hits, key=lambda item: item["timestamp"])
+    groups: List[List[Dict[str, Any]]] = []
+    current = [hits[0]]
+    for hit in hits[1:]:
+        if float(hit["timestamp"]) - float(current[-1]["timestamp"]) <= gap_seconds:
+            current.append(hit)
+        else:
+            groups.append(current)
+            current = [hit]
+    groups.append(current)
+    return [max(group, key=lambda item: float(item.get("confidence") or 0)) for group in groups]
+
+
+def merge_primary_and_fallback_death_candidates(primary: List[Dict[str, Any]], fallback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged = list(primary)
+    for candidate in fallback:
+        if any(abs(float(candidate["timestamp"]) - float(existing["timestamp"])) <= 6.0 for existing in merged):
+            continue
+        weaker = dict(candidate)
+        weaker["confidence"] = min(float(weaker.get("confidence") or 0), 0.72)
+        weaker["reason"] = "Fallback detector: " + str(weaker.get("reason") or "")
+        merged.append(weaker)
+    return sorted(merged, key=lambda item: item["timestamp"])
+
+
+def death_detector_summary(suggestions: List[Dict[str, Any]], player_name: str, ocr_available: bool) -> Dict[str, Any]:
+    primary = 0
+    fallback = 0
+    for item in suggestions:
+        metrics = item.get("metrics") or {}
+        detector = str(metrics.get("detector") or "")
+        reason = str(item.get("reason") or "")
+        if detector == "player_name_killfeed_and_combat_report" or reason.startswith("Primary detector:"):
+            primary += 1
+        elif reason.startswith("Fallback detector:"):
+            fallback += 1
+    warning = ""
+    if not ocr_available:
+        warning = "Player-name killfeed detection is unavailable because Tesseract OCR is not installed; only the fallback visual detector ran."
+    elif primary == 0:
+        warning = f"Player-name killfeed OCR ran for '{player_name}' but found no confirmed killfeed plus combat-report deaths."
+    message = (
+        f"VALORANT HUD detector used player '{player_name}': {primary} killfeed/combat-report hit(s), "
+        f"{fallback} fallback visual hit(s)."
+    )
+    return {
+        "player_name": player_name,
+        "ocr_available": ocr_available,
+        "primary_hits": primary,
+        "fallback_hits": fallback,
+        "warning": warning,
+        "message": message,
+    }
+
+
+def save_ocr_crop(region: np.ndarray, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.fromarray(np.clip(region * 255, 0, 255).astype(np.uint8))
+    gray = ImageOps.grayscale(image)
+    gray = ImageOps.autocontrast(gray)
+    gray = gray.resize((max(1, gray.width * 3), max(1, gray.height * 3)))
+    gray = gray.filter(ImageFilter.SHARPEN)
+    gray.save(path)
+    return path
+
+
+def tesseract_path() -> str:
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
+    for candidate in (
+        root / "tools" / "tesseract" / "tesseract.exe",
+        Path("C:/Program Files/Tesseract-OCR/tesseract.exe"),
+        Path("C:/Program Files (x86)/Tesseract-OCR/tesseract.exe"),
+    ):
+        if candidate.exists():
+            return str(candidate)
+    return ""
+
+
+def run_tesseract_text(tesseract: str, image_path: Path, psm: str = "6") -> str:
+    cmd = [tesseract, str(image_path), "stdout", "--psm", psm]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return ""
+    return " ".join(result.stdout.split())
+
+
+def fuzzy_contains_player_name(text: str, player_name: str) -> float:
+    target = normalize_ocr_name(player_name)
+    value = normalize_ocr_name(text)
+    if not target or not value:
+        return 0.0
+    if target in value:
+        return 1.0
+    best = SequenceMatcher(None, target, value).ratio()
+    window = max(len(target), 3)
+    for index in range(0, max(1, len(value) - window + 1)):
+        chunk = value[index : index + window]
+        best = max(best, SequenceMatcher(None, target, chunk).ratio())
+    return round(best, 3)
+
+
+def normalize_ocr_name(value: str) -> str:
+    text = str(value or "").lower()
+    text = text.replace("|", "i").replace("1", "i").replace("0", "o").replace("5", "s")
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def combat_report_text_score(text: str) -> float:
+    lower = str(text or "").lower()
+    score = 0.0
+    if any(token in lower for token in ("damage", "received", "dealt", "combat", "report")):
+        score += 0.35
+    if any(token in lower for token in ("head", "body", "leg")):
+        score += 0.20
+    if any(ch.isdigit() for ch in lower):
+        score += 0.22
+    return min(1.0, score)
+
+
+def red_or_blue_score(region: np.ndarray) -> float:
+    if region.size == 0:
+        return 0.0
+    red = region[:, :, 0]
+    green = region[:, :, 1]
+    blue = region[:, :, 2]
+    red_mask = (red > 0.40) & (red > green * 1.20) & (red > blue * 1.15)
+    blue_mask = (blue > 0.40) & (blue > red * 1.15) & (blue > green * 1.05)
+    return float(min(1.0, (float(red_mask.mean()) + float(blue_mask.mean())) * 8.0))
+
+
+def short_evidence(text: str, limit: int = 140) -> str:
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= limit:
+        return compact or "unreadable"
+    return compact[: limit - 3] + "..."
 
 
 def best_candidate(group: List[FrameMetrics]) -> Dict[str, Any]:
