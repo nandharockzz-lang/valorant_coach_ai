@@ -976,7 +976,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.23.0-local"
+APP_VERSION = "0.24.0-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -987,6 +987,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Add Detector Model Dashboard with dataset readiness, class coverage targets, milestones, training progress, evaluation metrics, and runtime training controls.",
             "Keep Clip Coach local-model output as the primary review and show deterministic detector evidence as diagnostics instead of replacing weak reviews with generic fallback text.",
             "Add Find Deaths range testing so a match can scan only a selected start/end time with an optional saved-candidate limit.",
             "Fix Clip Coach regression by preserving representative frames under context budget, shifting combat-report-only anchors earlier, and falling back to deterministic visual coaching when the local model refuses.",

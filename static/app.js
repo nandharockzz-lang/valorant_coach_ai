@@ -120,7 +120,7 @@ async function loadAutomation() {
   const detectorCandidatePath = currentMatchId
     ? `/api/detector/candidates?match_id=${encodeURIComponent(currentMatchId)}`
     : "/api/detector/candidates";
-  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorCandidates, signals] = await Promise.all([
+  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorDashboard, detectorCandidates, signals] = await Promise.all([
     api("/api/settings"),
     api("/api/jobs"),
     api("/api/watcher"),
@@ -146,6 +146,7 @@ async function loadAutomation() {
     api("/api/privacy/model-audit"),
     api("/api/sessions/report"),
     api("/api/detector/status"),
+    api("/api/detector/dashboard"),
     api(detectorCandidatePath),
     api("/api/signals"),
   ]);
@@ -175,6 +176,7 @@ async function loadAutomation() {
     modelAudit,
     sessionReport,
     detectorStatus,
+    detectorDashboard,
     detectorCandidates,
     signals
   );
@@ -182,7 +184,7 @@ async function loadAutomation() {
   renderJobProgressPanel();
 }
 
-function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorCandidates, signals) {
+function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorDashboard, detectorCandidates, signals) {
   const jobRows = jobs.slice(0, 8).map((job) => `
     <li>
       <strong>#${job.id} ${escapeHtml(job.name)}</strong>
@@ -402,7 +404,7 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
       <p class="muted">Current ${escapeHtml(tuning.current || "normal")} · recommended ${escapeHtml(tuning.recommended || "normal")}</p>
       <button class="secondary" data-action="apply-detector-tuning">Apply Tuning</button>
     </div>
-    ${renderTrainedDetectorPanel(detectorStatus || {}, detectorCandidates || {}, signals || {})}
+    ${renderTrainedDetectorPanel(detectorStatus || {}, detectorDashboard || {}, detectorCandidates || {}, signals || {})}
     <div class="automation-block">
       <h3>Backups</h3>
       <button class="secondary" data-action="backup-db">Backup DB</button>
@@ -523,8 +525,13 @@ function renderAnalyticsBars(analytics) {
   }).join("") || '<p class="muted">No trend bars yet.</p>';
 }
 
-function renderTrainedDetectorPanel(detector, candidates, signals) {
+function renderTrainedDetectorPanel(detector, dashboard, candidates, signals) {
   const annotations = detector.annotations || {};
+  const model = dashboard.model || {};
+  const nextAction = dashboard.next_action || {};
+  const latestEval = dashboard.latest_evaluation || null;
+  const latestJob = dashboard.latest_training_job || null;
+  const readiness = Math.max(0, Math.min(100, Number(dashboard.readiness_percent || 0)));
   const candidateRows = (candidates.candidates || []).slice(0, 8).map((item) => `
     <li>
       <button class="ghost" data-action="jump" data-ts="${escapeAttr(item.timestamp || 0)}">${escapeHtml(formatTs(item.timestamp || 0))}</button>
@@ -532,17 +539,75 @@ function renderTrainedDetectorPanel(detector, candidates, signals) {
       <span>${escapeHtml(item.status || "needs_label")} · priority ${escapeHtml(item.priority || 0)} · death #${escapeHtml(item.death_id || "")}</span>
     </li>
   `).join("");
-  const counts = Object.entries(annotations.class_counts || {})
-    .map(([label, count]) => `<span class="tag">${escapeHtml(label)} ${escapeHtml(count)}</span>`)
-    .join("");
+  const metricCards = [
+    ["Boxes", annotations.box_count || 0, "YOLO labels"],
+    ["Frames", annotations.frame_count || 0, "unique images"],
+    ["Negatives", annotations.negative_count || 0, "no_enemy labels"],
+    ["Queue", (dashboard.candidates || {}).needs_label || candidates.count || 0, "needs review"],
+  ].map(([label, value, detail]) => `
+    <div class="detector-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <p>${escapeHtml(detail)}</p>
+    </div>
+  `).join("");
+  const milestoneRows = (dashboard.milestones || []).map((item) => `
+    <div class="detector-progress-row">
+      <div><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.current_boxes || 0)} / ${escapeHtml(item.target_boxes || 0)} boxes</span></div>
+      ${renderMiniProgress(item.percent || 0)}
+      <p class="muted">${item.complete ? "Complete" : `${escapeHtml(item.remaining_boxes || 0)} more box(es)`} · ${escapeHtml(item.description || "")}</p>
+    </div>
+  `).join("");
+  const classRows = (dashboard.class_progress || []).map((item) => `
+    <div class="detector-progress-row compact">
+      <div><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.current || 0)} / ${escapeHtml(item.target || 0)}</span></div>
+      ${renderMiniProgress(item.percent || 0)}
+    </div>
+  `).join("");
+  const gapRows = (dashboard.gaps || []).slice(0, 5).map((item) => `
+    <li><strong>${escapeHtml(item.label || "Gap")}</strong> <span class="muted">${escapeHtml(item.detail || "")}</span></li>
+  `).join("");
+  const evalBlock = latestEval ? `
+    <div class="detector-quality">
+      <div><span>Precision</span><strong>${escapeHtml(latestEval.precision ?? "n/a")}</strong></div>
+      <div><span>Recall</span><strong>${escapeHtml(latestEval.recall ?? "n/a")}</strong></div>
+      <div><span>Frames</span><strong>${escapeHtml(latestEval.frames ?? "n/a")}</strong></div>
+    </div>
+    <p class="muted">${escapeHtml(latestEval.summary || "")}</p>
+  ` : `<p class="muted">No detector evaluation yet. Train a model, then run Evaluate Detector to get precision and recall.</p>`;
+  const jobBlock = latestJob ? `
+    <div class="detector-job">
+      <div><strong>#${escapeHtml(latestJob.id)} ${escapeHtml(latestJob.status || "unknown")}</strong><span>${escapeHtml(latestJob.progress || 0)}%</span></div>
+      ${renderMiniProgress(latestJob.progress || 0)}
+      <p class="muted">${escapeHtml(latestJob.message || "")}</p>
+    </div>
+  ` : `<p class="muted">No detector training job has run yet.</p>`;
   return `
-    <div class="automation-block">
-      <h3>Trained Enemy Detector</h3>
-      <p>${escapeHtml(detector.summary || "Detector status unavailable.")}</p>
-      <p class="muted">Model ${detector.model_exists ? "ready" : "missing"} · Ultralytics ${detector.ultralytics_available ? "installed" : "not installed"} · boxes ${escapeHtml(annotations.box_count || 0)} · frames ${escapeHtml(annotations.frame_count || 0)}</p>
-      <p class="muted">Signal contracts: ${escapeHtml((signals.signals || []).length || 0)} · candidate queue: ${escapeHtml(candidates.count || 0)} frame(s)</p>
-      <div class="tag-row">${counts || '<span class="tag">no boxes yet</span>'}</div>
+    <div class="automation-block detector-dashboard">
+      <div class="detector-dashboard-head">
+        <div>
+          <h3>Detector Model Dashboard</h3>
+          <p>${escapeHtml(dashboard.summary || detector.summary || "Detector status unavailable.")}</p>
+        </div>
+        <div class="detector-readiness" aria-label="Detector dataset readiness">
+          <strong>${escapeHtml(readiness)}%</strong>
+          <span>${escapeHtml(dashboard.stage_label || "Needs labels")}</span>
+        </div>
+      </div>
+      <div class="detector-readiness-bar">${renderMiniProgress(readiness)}</div>
+      <div class="detector-next-action">
+        <span>Recommended next step</span>
+        <strong>${escapeHtml(nextAction.label || "Build label queue")}</strong>
+        <p>${escapeHtml(nextAction.detail || "Create a training queue, label frames, then train locally.")}</p>
+      </div>
+      <div class="detector-metric-grid">${metricCards}</div>
+      <p class="muted">Model ${model.model_exists ? "ready" : "missing"} · Ultralytics ${model.ultralytics_available ? "installed" : "not installed"} · Signal contracts ${escapeHtml((signals.signals || []).length || 0)}</p>
       ${detector.suggested_command ? `<label>Suggested command <input id="detectorSuggestedCommand" type="text" value="${escapeAttr(detector.suggested_command)}" readonly /></label>` : ""}
+      <div class="detector-train-controls">
+        <label>Epochs <input id="detectorTrainEpochs" type="number" min="1" max="300" value="40" /></label>
+        <label>Image size <input id="detectorTrainImgsz" type="number" min="320" max="1280" step="32" value="640" /></label>
+        <label>Base model <input id="detectorTrainBaseModel" type="text" value="yolo11n.pt" /></label>
+      </div>
       <div class="row">
         <button class="secondary" data-action="build-detector-candidates">Build Label Queue</button>
         <button class="secondary" data-action="prelabel-detector-candidates">Pre-label Queue</button>
@@ -551,11 +616,33 @@ function renderTrainedDetectorPanel(detector, candidates, signals) {
         <button data-action="train-detector">Train Detector</button>
         ${detector.suggested_command ? '<button class="secondary" data-action="use-detector-command">Use Suggested Command</button>' : ""}
       </div>
+      <div class="detector-dashboard-grid">
+        <section>
+          <h4>Training Milestones</h4>
+          ${milestoneRows || '<p class="muted">No milestones available.</p>'}
+        </section>
+        <section>
+          <h4>Class Coverage</h4>
+          ${classRows || '<p class="muted">No class labels yet.</p>'}
+        </section>
+        <section>
+          <h4>Model Quality</h4>
+          ${evalBlock}
+        </section>
+        <section>
+          <h4>Training Progress</h4>
+          ${jobBlock}
+        </section>
+      </div>
+      <details class="advanced-actions">
+        <summary>Remaining gaps</summary>
+        <ul class="compact-list">${gapRows || "<li>No major detector training gaps currently reported.</li>"}</ul>
+      </details>
       <details class="advanced-actions">
         <summary>Active-learning queue</summary>
         <ul class="compact-list">${candidateRows || "<li>Build a label queue after extracting keyframes or running Clip Coach.</li>"}</ul>
       </details>
-      <p class="muted">Confirmed enemies come only from trained detector boxes, VLM evidence, or your labels. Red/HUD heuristics remain contact proxies.</p>
+      <p class="muted">${escapeHtml(dashboard.note || "Confirmed enemies come only from trained detector boxes, VLM evidence, or your labels. Red/HUD heuristics remain contact proxies.")}</p>
     </div>
   `;
 }
@@ -906,9 +993,12 @@ async function exportDetectorDataset() {
 }
 
 async function trainDetector() {
+  const epochs = Number(document.querySelector("#detectorTrainEpochs")?.value || 40);
+  const imgsz = Number(document.querySelector("#detectorTrainImgsz")?.value || 640);
+  const baseModel = document.querySelector("#detectorTrainBaseModel")?.value || "yolo11n.pt";
   const payload = await api("/api/detector/train", {
     method: "POST",
-    body: JSON.stringify({ epochs: 40, imgsz: 640 }),
+    body: JSON.stringify({ epochs, imgsz, base_model: baseModel }),
   });
   setStatus(`Detector training queued as job #${payload.job_id}.`, { state: "busy", progress: 1 });
   ensureJobPolling();

@@ -1,11 +1,12 @@
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from PIL import Image
 
@@ -17,6 +18,19 @@ DETECTOR_CLASSES = ["enemy_body", "enemy_head", "teammate", "weapon", "ability_e
 NEGATIVE_CLASS = "no_enemy"
 DATASET_DIR_NAME = "detector_dataset"
 MODEL_DIR_NAME = "detector_models"
+DETECTOR_CLASS_TARGETS = {
+    "enemy_body": 800,
+    "enemy_head": 300,
+    "teammate": 150,
+    "weapon": 100,
+    "ability_effect": 100,
+    NEGATIVE_CLASS: 200,
+}
+DETECTOR_MILESTONES = [
+    {"id": "prototype", "label": "Prototype detector", "target_boxes": 300, "description": "Enough labels to train a rough first model."},
+    {"id": "useful", "label": "Useful personal detector", "target_boxes": 1000, "description": "Usually enough to help pre-label your own recordings."},
+    {"id": "strong", "label": "Strong personal detector", "target_boxes": 1500, "description": "Better coverage across maps, agents, lighting, and HUD states."},
+]
 
 
 def detector_status(db: Database, data_dir: Path) -> Dict[str, Any]:
@@ -46,6 +60,208 @@ def detector_status(db: Database, data_dir: Path) -> Dict[str, Any]:
         "negative_class": NEGATIVE_CLASS,
         "summary": detector_status_summary(configured, model_path, ultralytics, annotations),
     }
+
+
+def detector_training_dashboard(db: Database, data_dir: Path) -> Dict[str, Any]:
+    status = detector_status(db, data_dir)
+    annotations = status.get("annotations") or {}
+    candidates = detector_candidate_summary(db)
+    class_counts = annotations.get("class_counts") or {}
+    box_count = int(annotations.get("box_count") or 0)
+    frame_count = int(annotations.get("frame_count") or 0)
+    negative_count = int(annotations.get("negative_count") or 0)
+    latest_eval = latest_detector_evaluation(db)
+    latest_job = latest_detector_training_job(db)
+    latest_model = latest_detector_model(data_dir)
+
+    label_score = min(box_count / 1000.0, 1.0) * 45.0
+    frame_score = min(frame_count / 500.0, 1.0) * 15.0
+    negative_score = min(negative_count / DETECTOR_CLASS_TARGETS[NEGATIVE_CLASS], 1.0) * 10.0
+    balance_items = [
+        min(float(class_counts.get(label) or 0) / float(target), 1.0)
+        for label, target in DETECTOR_CLASS_TARGETS.items()
+        if label != NEGATIVE_CLASS
+    ]
+    balance_score = (sum(balance_items) / max(1, len(balance_items))) * 20.0
+    model_score = 10.0 if status.get("model_exists") else 0.0
+    readiness = int(round(min(100.0, label_score + frame_score + negative_score + balance_score + model_score)))
+    if int(annotations.get("annotation_count") or 0) > 0:
+        readiness = max(1, readiness)
+
+    class_progress = []
+    for label, target in DETECTOR_CLASS_TARGETS.items():
+        current = negative_count if label == NEGATIVE_CLASS else int(class_counts.get(label) or 0)
+        class_progress.append(
+            {
+                "label": label,
+                "current": current,
+                "target": target,
+                "remaining": max(0, target - current),
+                "percent": int(round(min(100.0, (current / max(1, target)) * 100.0))),
+            }
+        )
+
+    milestones = []
+    for milestone in DETECTOR_MILESTONES:
+        target = int(milestone["target_boxes"])
+        milestones.append(
+            {
+                **milestone,
+                "current_boxes": box_count,
+                "remaining_boxes": max(0, target - box_count),
+                "percent": int(round(min(100.0, (box_count / max(1, target)) * 100.0))),
+                "complete": box_count >= target,
+            }
+        )
+
+    gaps = detector_training_gaps(status, annotations, candidates, latest_eval)
+    next_action = detector_next_training_action(status, annotations, candidates, latest_eval)
+    stage = detector_training_stage(status, annotations, latest_eval)
+
+    return {
+        "ok": True,
+        "readiness_percent": readiness,
+        "stage": stage,
+        "stage_label": detector_stage_label(stage),
+        "next_action": next_action,
+        "summary": detector_dashboard_summary(readiness, stage, box_count, frame_count),
+        "annotations": annotations,
+        "candidates": candidates,
+        "class_targets": DETECTOR_CLASS_TARGETS,
+        "class_progress": class_progress,
+        "milestones": milestones,
+        "model": {
+            "configured": bool(status.get("configured")),
+            "model_exists": bool(status.get("model_exists")),
+            "model_path": status.get("model_path") or "",
+            "latest_trained_model": latest_model,
+            "ultralytics_available": bool(status.get("ultralytics_available")),
+            "dataset_dir": status.get("dataset_dir") or "",
+            "dataset_exists": bool(status.get("dataset_exists")),
+        },
+        "latest_evaluation": latest_eval,
+        "latest_training_job": latest_job,
+        "gaps": gaps,
+        "note": "Readiness is a local dataset coverage estimate. Use evaluation precision and recall to judge model quality.",
+    }
+
+
+def detector_training_stage(status: Dict[str, Any], annotations: Dict[str, Any], latest_eval: Optional[Dict[str, Any]]) -> str:
+    boxes = int(annotations.get("box_count") or 0)
+    if latest_eval:
+        return "evaluated"
+    if status.get("model_exists"):
+        return "trained"
+    if boxes >= 300:
+        return "trainable"
+    if boxes > 0:
+        return "labeling"
+    return "empty"
+
+
+def detector_stage_label(stage: str) -> str:
+    return {
+        "empty": "Needs labels",
+        "labeling": "Labeling in progress",
+        "trainable": "Ready for first training",
+        "trained": "Model trained",
+        "evaluated": "Model evaluated",
+    }.get(stage, "Unknown")
+
+
+def detector_dashboard_summary(readiness: int, stage: str, boxes: int, frames: int) -> str:
+    if stage == "empty":
+        return "No detector training labels yet. Build the queue and label visible enemies first."
+    return f"{readiness}% dataset readiness from {boxes} labeled box(es) across {frames} frame(s)."
+
+
+def detector_training_gaps(
+    status: Dict[str, Any],
+    annotations: Dict[str, Any],
+    candidates: Dict[str, Any],
+    latest_eval: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    counts = annotations.get("class_counts") or {}
+    gaps = []
+    if not status.get("ultralytics_available"):
+        gaps.append({"severity": "blocked", "label": "Training dependency missing", "detail": "Install requirements-detector.txt before local YOLO training."})
+    if int(annotations.get("box_count") or 0) < 300:
+        gaps.append({"severity": "high", "label": "Not enough boxes", "detail": "Aim for at least 300 enemy/head boxes for a rough prototype."})
+    if int(counts.get("enemy_body") or 0) < 50:
+        gaps.append({"severity": "high", "label": "Enemy body coverage low", "detail": "Label full body boxes from different ranges and maps."})
+    if int(counts.get("enemy_head") or 0) < 30:
+        gaps.append({"severity": "medium", "label": "Enemy head coverage low", "detail": "Add head boxes so crosshair/contact reviews can become more precise."})
+    if int(annotations.get("negative_count") or 0) < 30:
+        gaps.append({"severity": "medium", "label": "Negative frames low", "detail": "Mark no_enemy frames to reduce false positives."})
+    if int(candidates.get("needs_label") or 0) > 0:
+        gaps.append({"severity": "medium", "label": "Queue needs review", "detail": f"{int(candidates.get('needs_label') or 0)} candidate frame(s) still need labels."})
+    if int(annotations.get("box_count") or 0) >= 300 and not status.get("model_exists"):
+        gaps.append({"severity": "high", "label": "No trained model yet", "detail": "Train the detector after exporting the current dataset."})
+    if status.get("model_exists") and not latest_eval:
+        gaps.append({"severity": "medium", "label": "No evaluation yet", "detail": "Run evaluation to measure precision and recall against your labels."})
+    return gaps
+
+
+def detector_next_training_action(
+    status: Dict[str, Any],
+    annotations: Dict[str, Any],
+    candidates: Dict[str, Any],
+    latest_eval: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    boxes = int(annotations.get("box_count") or 0)
+    if int(candidates.get("count") or 0) == 0:
+        return {"action": "build_queue", "label": "Build label queue", "detail": "Create candidate frames from recent keyframes and Clip Coach output."}
+    if boxes < 300:
+        return {"action": "label", "label": "Label more enemy frames", "detail": f"Add {300 - boxes} more box label(s) for the first prototype milestone."}
+    if not status.get("ultralytics_available"):
+        return {"action": "install_dependency", "label": "Install training dependency", "detail": "Run pip install -r requirements-detector.txt, then train."}
+    if not status.get("model_exists"):
+        return {"action": "train", "label": "Train detector", "detail": "Dataset is ready for the first YOLO training run."}
+    if not latest_eval:
+        return {"action": "evaluate", "label": "Evaluate detector", "detail": "Measure precision and recall before trusting the detector."}
+    if int(candidates.get("needs_label") or 0) > 0:
+        return {"action": "prelabel", "label": "Pre-label queue", "detail": "Use the trained model to speed up the remaining labels."}
+    return {"action": "improve", "label": "Keep labeling hard examples", "detail": "Add missed enemies, false positives, and new map/agent situations before retraining."}
+
+
+def latest_detector_evaluation(db: Database) -> Optional[Dict[str, Any]]:
+    row = db.get_latest_structured_analysis("match", 0, "detector_evaluation")
+    payload = (row or {}).get("payload") or {}
+    if not payload:
+        return None
+    return {
+        "created_at": row.get("created_at") or payload.get("created_at") or "",
+        "summary": payload.get("summary") or "",
+        "precision": payload.get("precision"),
+        "recall": payload.get("recall"),
+        "frames": payload.get("frames"),
+        "true_positive": payload.get("true_positive"),
+        "false_positive": payload.get("false_positive"),
+        "false_negative": payload.get("false_negative"),
+    }
+
+
+def latest_detector_training_job(db: Database) -> Optional[Dict[str, Any]]:
+    for job in db.list_jobs(100):
+        if "train enemy detector" in str(job.get("name") or "").lower():
+            return {
+                "id": job.get("id"),
+                "name": job.get("name"),
+                "status": job.get("status"),
+                "progress": job.get("progress"),
+                "message": job.get("message") or "",
+                "updated_at": job.get("updated_at") or "",
+                "result": job.get("result") or {},
+            }
+    return None
+
+
+def latest_detector_model(data_dir: Path) -> str:
+    root = data_dir / MODEL_DIR_NAME
+    if not root.exists():
+        return ""
+    models = sorted(root.glob("*/weights/best.pt"), key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)
+    return str(models[0]) if models else ""
 
 
 def detector_status_summary(configured: bool, model_path: str, ultralytics: bool, annotations: Dict[str, Any]) -> str:
@@ -555,11 +771,20 @@ def yolo_label_line(class_id: int, bbox: Dict[str, float]) -> str:
     return f"{class_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}"
 
 
-def train_detector(db: Database, data_dir: Path, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def train_detector(
+    db: Database,
+    data_dir: Path,
+    payload: Optional[Dict[str, Any]] = None,
+    update: Optional[Callable[[str, int], None]] = None,
+) -> Dict[str, Any]:
     payload = payload or {}
+    if update:
+        update("Exporting YOLO detector dataset.", 5)
     export = export_detector_dataset(db, data_dir, payload)
     if not export.get("ok"):
         return {"ok": False, "message": "No detector boxes were exported; add enemy/head annotations first.", "export": export}
+    if update:
+        update(f"Exported {export.get('images', 0)} image(s) and {export.get('boxes', 0)} box label(s).", 15)
     if not module_available("ultralytics"):
         return {
             "ok": False,
@@ -578,23 +803,58 @@ def train_detector(db: Database, data_dir: Path, payload: Optional[Dict[str, Any
         "imgsz=int(sys.argv[4]), project=sys.argv[5], name=sys.argv[6])"
     )
     cmd = [sys.executable, "-c", train_code, model, str(export["data_yaml"]), str(epochs), str(imgsz), str(project), name]
-    completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=None)
+    if update:
+        update(f"Starting YOLO training for {epochs} epoch(s) at {imgsz}px.", 25)
+    stdout_tail, returncode = run_training_process(cmd, epochs, update)
     weights = project / name / "weights" / "best.pt"
     result = {
-        "ok": completed.returncode == 0 and weights.exists(),
-        "message": "Detector training completed." if completed.returncode == 0 else "Detector training failed.",
+        "ok": returncode == 0 and weights.exists(),
+        "message": "Detector training completed." if returncode == 0 else "Detector training failed.",
         "command": " ".join(cmd),
-        "returncode": completed.returncode,
-        "stdout_tail": completed.stdout[-4000:],
-        "stderr_tail": completed.stderr[-4000:],
+        "returncode": returncode,
+        "stdout_tail": stdout_tail[-4000:],
+        "stderr_tail": "",
         "model_path": str(weights) if weights.exists() else "",
         "export": export,
+        "epochs": epochs,
+        "imgsz": imgsz,
     }
     if result["ok"]:
         db.set_setting("enemy_detector_model_path", str(weights))
         db.set_setting("enemy_detector_command", f'{sys.executable} -m valorant_coach.detector --infer --model "{weights}" --image "{{image}}"')
-    db.log("info" if result["ok"] else "error", "detector", result["message"], {"model_path": result.get("model_path"), "returncode": completed.returncode})
+    db.log("info" if result["ok"] else "error", "detector", result["message"], {"model_path": result.get("model_path"), "returncode": returncode})
     return result
+
+
+def run_training_process(
+    cmd: List[str],
+    epochs: int,
+    update: Optional[Callable[[str, int], None]] = None,
+) -> Tuple[str, int]:
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    lines: List[str] = []
+    epoch_pattern = re.compile(rf"\b(\d+)\s*/\s*{int(epochs)}\b")
+    assert process.stdout is not None
+    for line in process.stdout:
+        clean = line.rstrip()
+        if clean:
+            lines.append(clean)
+            lines = lines[-250:]
+            match = epoch_pattern.search(clean)
+            if match and update:
+                epoch = max(1, min(epochs, int(match.group(1))))
+                progress = min(92, 25 + int((epoch / max(1, epochs)) * 67))
+                update(f"Training detector epoch {epoch}/{epochs}.", progress)
+    returncode = process.wait()
+    return "\n".join(lines), int(returncode or 0)
 
 
 def infer_image(model_path: str, image_path: str, confidence: float = 0.25) -> Dict[str, Any]:

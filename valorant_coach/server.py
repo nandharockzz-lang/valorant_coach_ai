@@ -80,6 +80,7 @@ from .db import Database
 from .detector import (
     build_detector_candidates,
     detector_status,
+    detector_training_dashboard,
     evaluate_detector_dataset,
     export_detector_dataset,
     list_detector_candidates,
@@ -190,6 +191,8 @@ class CoachHandler(BaseHTTPRequestHandler):
             self.json_response(detector_tuning(DB))
         elif parsed.path == "/api/detector/status":
             self.json_response(detector_status(DB, DATA_DIR))
+        elif parsed.path == "/api/detector/dashboard":
+            self.json_response(detector_training_dashboard(DB, DATA_DIR))
         elif parsed.path == "/api/detector/candidates":
             query = parse_qs(parsed.query)
             match_id = parse_optional_int((query.get("match_id") or [""])[0])
@@ -853,7 +856,7 @@ def batch_death_job(match_id: int, update: Any) -> Dict[str, Any]:
 
 
 def detector_training_job(options: Dict[str, Any], update: Any) -> Dict[str, Any]:
-    update("Exporting YOLO detector dataset.", 5)
-    result = train_detector(DB, DATA_DIR, options)
+    update("Preparing detector training run.", 3)
+    result = train_detector(DB, DATA_DIR, options, update)
     update(result.get("message") or "Detector training finished.", 100 if result.get("ok") else 95)
     return result

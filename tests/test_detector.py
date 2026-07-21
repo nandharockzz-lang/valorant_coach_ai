@@ -8,6 +8,7 @@ from valorant_coach.db import Database
 from valorant_coach.detector import (
     build_detector_candidates,
     detector_status,
+    detector_training_dashboard,
     export_detector_dataset,
     list_detector_candidates,
     save_detector_annotation,
@@ -66,6 +67,67 @@ class DetectorTests(unittest.TestCase):
 
             self.assertFalse(status["configured"])
             self.assertIn("annotations", status)
+
+    def test_training_dashboard_starts_with_clear_next_action(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = Database(root / "coach.sqlite3")
+
+            dashboard = detector_training_dashboard(db, root)
+
+            self.assertTrue(dashboard["ok"])
+            self.assertEqual(dashboard["readiness_percent"], 0)
+            self.assertEqual(dashboard["stage"], "empty")
+            self.assertEqual(dashboard["next_action"]["action"], "build_queue")
+            self.assertTrue(any(gap["label"] == "Not enough boxes" for gap in dashboard["gaps"]))
+
+    def test_training_dashboard_tracks_label_progress(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = Database(root / "coach.sqlite3")
+            match_id = db.upsert_match(str(root / "match.mp4"), "now", "imported")
+            death_id = db.create_death(match_id, None, 12.0, ["test"], "", 0.8)
+            save_detector_annotation(
+                db,
+                death_id,
+                {
+                    "frame_id": "frame-a",
+                    "label": "enemy_body",
+                    "bbox_norm": {"x": 0.4, "y": 0.2, "w": 0.1, "h": 0.2},
+                },
+            )
+            save_detector_annotation(db, death_id, {"frame_id": "frame-b", "label": "no_enemy"})
+
+            dashboard = detector_training_dashboard(db, root)
+            body_progress = next(item for item in dashboard["class_progress"] if item["label"] == "enemy_body")
+            negative_progress = next(item for item in dashboard["class_progress"] if item["label"] == "no_enemy")
+
+            self.assertGreater(dashboard["readiness_percent"], 0)
+            self.assertEqual(dashboard["stage"], "labeling")
+            self.assertEqual(body_progress["current"], 1)
+            self.assertEqual(negative_progress["current"], 1)
+            self.assertGreater(dashboard["milestones"][0]["remaining_boxes"], 0)
+
+    def test_training_dashboard_includes_latest_evaluation(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = Database(root / "coach.sqlite3")
+            db.save_structured_analysis(
+                0,
+                "detector_evaluation",
+                {
+                    "summary": "Detector evaluation: precision 0.75, recall 0.50 on 4 labeled frame(s).",
+                    "precision": 0.75,
+                    "recall": 0.5,
+                    "frames": 4,
+                },
+            )
+
+            dashboard = detector_training_dashboard(db, root)
+
+            self.assertEqual(dashboard["stage"], "evaluated")
+            self.assertEqual(dashboard["latest_evaluation"]["precision"], 0.75)
+            self.assertEqual(dashboard["latest_evaluation"]["frames"], 4)
 
     def test_candidate_queue_uses_saved_keyframes(self):
         with TemporaryDirectory() as tmp:
