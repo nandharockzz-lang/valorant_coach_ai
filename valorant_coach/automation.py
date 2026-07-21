@@ -944,7 +944,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.12.5-local"
+APP_VERSION = "0.12.6-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -955,6 +955,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Add adaptive Local AI review windows, structured perception/coaching output, HUD context extraction prompts, and improvement trend panels.",
             "Add persistent local coach memory that learns from completed Local AI clip reviews and feeds future prompts.",
             "Make Jump scroll back to the video, fold dashboard panels and Coach Mode, and require consensus before saving scoreboard OCR rounds.",
             "Add a separate aggregate Player Status tab and combine clip review actions into one Coach This Clip workflow.",
@@ -1451,7 +1452,8 @@ def local_ai_status(db: Database) -> Dict[str, Any]:
     purpose = str(db.get_setting("local_ai_purpose", "coach") or "coach").strip()
     review_mode = str(db.get_setting("local_ai_review_mode", "contact") or "contact").strip()
     review_fps = str(db.get_setting("local_ai_review_fps", "") or "").strip()
-    sequence_profile = local_ai_sequence_profile(review_mode, review_fps)
+    review_window_seconds = normalize_review_window_setting(db.get_setting("local_ai_review_window_seconds", "10"))
+    sequence_profile = local_ai_sequence_profile(review_mode, review_fps, review_window_seconds)
     enabled = bool(command) if provider == "custom-command" else bool(base_url and model)
     return {
         "enabled": enabled,
@@ -1464,6 +1466,7 @@ def local_ai_status(db: Database) -> Dict[str, Any]:
         "review_mode": sequence_profile["id"],
         "review_mode_label": sequence_profile["label"],
         "review_fps": review_fps,
+        "review_window_seconds": review_window_seconds,
         "review_frame_limit": sequence_profile["limit"],
         "status": "configured" if enabled else "disabled",
         "expected_protocol": "custom command uses stdin JSON/stdout JSON; HTTP providers use local-only JSON requests",
@@ -1483,7 +1486,8 @@ def save_local_ai_config(db: Database, payload: Dict[str, Any]) -> Dict[str, Any
     base_url = str(payload.get("base_url") or default_base_url(provider)).strip()
     model = str(payload.get("model") or default_model(provider)).strip()
     review_fps = normalize_review_fps_setting(payload.get("review_fps"))
-    review_mode = local_ai_sequence_profile(str(payload.get("review_mode") or "contact"), review_fps)["id"]
+    review_window_seconds = normalize_review_window_setting(payload.get("review_window_seconds"))
+    review_mode = local_ai_sequence_profile(str(payload.get("review_mode") or "contact"), review_fps, review_window_seconds)["id"]
     db.set_setting("local_ai_provider", provider)
     db.set_setting("local_ai_purpose", purpose)
     db.set_setting("local_ai_command", command)
@@ -1491,7 +1495,8 @@ def save_local_ai_config(db: Database, payload: Dict[str, Any]) -> Dict[str, Any
     db.set_setting("local_ai_model", model)
     db.set_setting("local_ai_review_mode", review_mode)
     db.set_setting("local_ai_review_fps", review_fps)
-    db.log("info", "local-ai", "Updated local AI configuration", {"provider": provider, "purpose": purpose, "review_mode": review_mode, "review_fps": review_fps, "configured": bool(command or base_url)})
+    db.set_setting("local_ai_review_window_seconds", review_window_seconds)
+    db.log("info", "local-ai", "Updated local AI configuration", {"provider": provider, "purpose": purpose, "review_mode": review_mode, "review_fps": review_fps, "review_window_seconds": review_window_seconds, "configured": bool(command or base_url)})
     return {"ok": True, "local_ai": local_ai_status(db)}
 
 
@@ -1507,6 +1512,16 @@ def normalize_review_fps_setting(value: Any) -> str:
     return str(max(1, min(20, number)))
 
 
+def normalize_review_window_setting(value: Any) -> str:
+    if value is None or value == "":
+        return "10"
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return "10"
+    return str(max(5, min(20, number)))
+
+
 def test_local_ai_connection(db: Database, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     payload = payload or {}
     if payload:
@@ -1514,8 +1529,9 @@ def test_local_ai_connection(db: Database, payload: Optional[Dict[str, Any]] = N
         status = {
             "provider": provider,
             "purpose": str(payload.get("purpose") or "coach").strip(),
-            "review_mode": local_ai_sequence_profile(str(payload.get("review_mode") or "contact"), payload.get("review_fps"))["id"],
+            "review_mode": local_ai_sequence_profile(str(payload.get("review_mode") or "contact"), payload.get("review_fps"), payload.get("review_window_seconds"))["id"],
             "review_fps": normalize_review_fps_setting(payload.get("review_fps")),
+            "review_window_seconds": normalize_review_window_setting(payload.get("review_window_seconds")),
             "command": str(payload.get("command") or "").strip(),
             "base_url": str(payload.get("base_url") or default_base_url(provider)).strip(),
             "model": str(payload.get("model") or "").strip(),
@@ -1578,8 +1594,15 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
         }
         db.save_death_analysis(death_id, "local_ai_review", result)
         return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
-    sequence_profile = local_ai_sequence_profile(str(status.get("review_mode") or "contact"), status.get("review_fps"))
-    sequence = build_local_ai_review_sequence(db, death_id, db.path.parent / "vision", mode=sequence_profile["id"], fps_override=status.get("review_fps"))
+    sequence_profile = local_ai_sequence_profile(str(status.get("review_mode") or "contact"), status.get("review_fps"), status.get("review_window_seconds"))
+    sequence = build_local_ai_review_sequence(
+        db,
+        death_id,
+        db.path.parent / "vision",
+        mode=sequence_profile["id"],
+        fps_override=status.get("review_fps"),
+        window_seconds=status.get("review_window_seconds"),
+    )
     if not sequence.get("ok"):
         return {"ok": False, "message": sequence.get("message") or "Could not prepare local AI review sequence.", "status": status}
     request = {
@@ -1610,15 +1633,7 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
         model_payload = json.loads(completed.stdout or "{}")
     except json.JSONDecodeError:
         model_payload = {"summary": completed.stdout.strip()}
-    result = {
-        "kind": "local_ai_review",
-        "summary": str(model_payload.get("summary") or "Local AI review completed."),
-        "labels": normalize_text_list(model_payload.get("labels") or model_payload.get("suggested_labels") or []),
-        "better_play": str(model_payload.get("better_play") or ""),
-        "confidence": float(model_payload.get("confidence") or 0.5),
-        "status": "completed",
-        "provider": "local-command",
-    }
+    result = build_model_review_result(model_payload, "local-command", completed.stdout or "")
     db.save_death_analysis(death_id, "local_ai_review", result)
     update_coach_memory_from_review(db, death, result)
     return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
@@ -1694,6 +1709,7 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
     sequence_profile = local_ai_sequence_profile(
         str(db.get_setting("local_ai_review_mode", "contact") or "contact"),
         db.get_setting("local_ai_review_fps", ""),
+        db.get_setting("local_ai_review_window_seconds", "10"),
     )
     labels = ", ".join(death.get("mistake_labels") or [])
     base = template["prompt"].format(
@@ -1705,14 +1721,39 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
     return (
         base
         + "\n\n"
+        + build_known_game_context(db, death)
+        + "\n\n"
         + build_memory_prompt_context(db)
+        + "\n\nReturn one strict JSON object using this schema:\n"
+        + json.dumps(local_ai_review_schema(), indent=2)
         + f"\n\nYou will receive an ordered frame sequence using this sampling mode: {sequence_profile['label']}. "
         "Treat the images as a short local video clip in chronological order. Track crosshair movement, clearing path, movement while aiming, minimap/HUD changes, and fight setup over time. "
         "Enemies can appear for only one or two frames, so scan every frame for a visible opponent, damage cue, tracer, muzzle flash, or sudden contact. "
         "Use only visible evidence from those frames. Do not assume enemy positions, player intent, comms, utility usage, or the outcome unless visible. "
         "If the frames do not prove a claim, write 'insufficient visual evidence' and reduce confidence. "
-        "Return strict JSON with keys: summary, visible_evidence, labels, better_play, drill, confidence."
+        "Separate perception from coaching: perception must describe only what is visible, and coaching must explain the decision error and action."
     )
+
+
+def build_known_game_context(db: Database, death: Dict[str, Any]) -> str:
+    match = db.get_match(int(death.get("match_id") or 0)) if death.get("match_id") else None
+    annotations = death.get("annotations") or []
+    annotation_bits = []
+    for row in annotations[:3]:
+        payload = row.get("payload") or {}
+        if payload.get("better_decision"):
+            annotation_bits.append(str(payload.get("better_decision")))
+    context = {
+        "map": (match or {}).get("map") or "unknown",
+        "agent": (match or {}).get("agent") or "unknown",
+        "round": death.get("round_number") or "unknown",
+        "timestamp_seconds": death.get("timestamp") or "unknown",
+        "existing_labels": death.get("mistake_labels") or [],
+        "marker_notes": death.get("notes") or "",
+        "saved_user_annotations": annotation_bits,
+        "hud_fields_to_extract_if_visible": ["hp", "weapon", "score", "teammates_alive", "spike_state", "round_timer"],
+    }
+    return "Known match context:\n" + json.dumps(context, indent=2)
 
 
 def render_ocr_model_prompt(death: Dict[str, Any]) -> str:
@@ -1815,7 +1856,7 @@ def render_batch_model_prompt(base_prompt: str, index: int, total: int, frames: 
         base_prompt
         + f"\n\nThis is batch {index}/{total}, covering {frame_range}. "
         "Your job for this batch is detection first: inspect every frame for any visible enemy body, head, weapon, outline, muzzle flash, tracer, damage cue, or sudden contact. "
-        "Return strict JSON with summary, visible_evidence, labels, better_play, drill, confidence. "
+        "Return strict JSON using the same perception/coaching schema. "
         "In visible_evidence, cite exact frame numbers/timing for anything you see. If no enemy is visible, say that explicitly and still describe crosshair/movement evidence."
     )
 
@@ -1882,7 +1923,7 @@ def render_batch_synthesis_prompt(base_prompt: str, chunk_reviews: List[Dict[str
         base_prompt
         + "\n\nCombine these per-batch visual reviews into one final VALORANT coaching analysis. "
         "Prioritize any batch that saw a visible enemy/contact cue. Do not invent details beyond the batch evidence. "
-        "Return strict JSON with summary, visible_evidence, labels, better_play, drill, confidence.\n\n"
+        "Return strict JSON using the same perception/coaching schema with one final diagnosis.\n\n"
         + json.dumps(compact_reviews)
     )
 
@@ -1897,13 +1938,47 @@ def fallback_batched_review(provider: str, chunk_reviews: List[Dict[str, Any]]) 
         evidence.extend(review.get("visible_evidence") or [])
         labels.extend(review.get("labels") or [])
         confidence = max(confidence, float(review.get("confidence") or 0))
+    summary = "Batched Local AI review completed. " + " ".join(summaries[:2])[:450]
+    better_play = next((str(review.get("better_play")) for review in chunk_reviews if review.get("better_play")), "")
+    drill = next((str(review.get("drill")) for review in chunk_reviews if review.get("drill")), "")
     return {
         "kind": "local_ai_review",
-        "summary": "Batched Local AI review completed. " + " ".join(summaries[:2])[:450],
+        "summary": summary,
         "visible_evidence": evidence[:8],
         "labels": sorted(set(labels))[:6],
-        "better_play": next((str(review.get("better_play")) for review in chunk_reviews if review.get("better_play")), ""),
-        "drill": next((str(review.get("drill")) for review in chunk_reviews if review.get("drill")), ""),
+        "better_play": better_play,
+        "drill": drill,
+        "perception": {
+            "enemy_seen": "uncertain",
+            "enemy_frames": [],
+            "first_contact_time": "unknown",
+            "time_to_death": "unknown",
+            "crosshair_level": "unknown",
+            "crosshair_alignment": "unknown",
+            "peek_type": "unknown",
+            "movement_state": "unknown",
+            "utility_seen": "unknown",
+            "weapon_seen": "unknown",
+            "hp_seen": "unknown",
+            "score_seen": "unknown",
+            "teammates_alive_seen": "unknown",
+            "spike_state_seen": "unknown",
+            "evidence": evidence[:8],
+            "confidence": confidence or 0.5,
+        },
+        "coaching": {
+            "summary": summary,
+            "why_death_happened": summary,
+            "first_mistake": "",
+            "better_decision": better_play,
+            "utility_issue": "",
+            "crosshair_issue": "",
+            "positioning_issue": "",
+            "mechanical_issue": "",
+            "drill": drill,
+            "labels": sorted(set(labels))[:6],
+            "confidence": confidence or 0.5,
+        },
         "confidence": confidence or 0.5,
         "status": "completed",
         "provider": provider,
@@ -1929,14 +2004,38 @@ def parse_model_review(text: str, provider: str) -> Dict[str, Any]:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         parsed = {"summary": text}
+    return build_model_review_result(parsed, provider, text)
+
+
+def build_model_review_result(parsed: Dict[str, Any], provider: str, raw_text: str = "") -> Dict[str, Any]:
+    if not isinstance(parsed, dict):
+        parsed = {"summary": raw_text or str(parsed)}
+    perception = normalize_perception(parsed.get("perception") or parsed)
+    coaching = normalize_coaching(parsed.get("coaching") or parsed)
+    confidence = normalize_confidence(parsed.get("confidence", coaching.get("confidence", perception.get("confidence", 0.55))))
+    labels = normalize_text_list(parsed.get("labels") or parsed.get("suggested_labels") or coaching.get("labels") or [])
+    summary = str(
+        parsed.get("summary")
+        or coaching.get("summary")
+        or parsed.get("what_happened")
+        or raw_text[:500]
+        or "Local AI review completed."
+    )
     result = {
         "kind": "local_ai_review",
-        "summary": str(parsed.get("summary") or parsed.get("what_happened") or text[:500]),
-        "visible_evidence": normalize_text_list(parsed.get("visible_evidence") or parsed.get("evidence") or []),
-        "labels": normalize_text_list(parsed.get("labels") or parsed.get("suggested_labels") or []),
-        "better_play": str(parsed.get("better_play") or parsed.get("recommendation") or ""),
-        "drill": str(parsed.get("drill") or ""),
-        "confidence": float(parsed.get("confidence") or 0.55),
+        "summary": summary,
+        "visible_evidence": normalize_text_list(parsed.get("visible_evidence") or parsed.get("evidence") or perception.get("evidence") or []),
+        "labels": labels,
+        "better_play": str(parsed.get("better_play") or parsed.get("recommendation") or coaching.get("better_decision") or ""),
+        "drill": str(parsed.get("drill") or coaching.get("drill") or ""),
+        "confidence": confidence,
+        "perception": perception,
+        "coaching": coaching,
+        "first_mistake": str(parsed.get("first_mistake") or coaching.get("first_mistake") or ""),
+        "utility_issue": str(parsed.get("utility_issue") or coaching.get("utility_issue") or ""),
+        "crosshair_issue": str(parsed.get("crosshair_issue") or coaching.get("crosshair_issue") or ""),
+        "positioning_issue": str(parsed.get("positioning_issue") or coaching.get("positioning_issue") or ""),
+        "mechanical_issue": str(parsed.get("mechanical_issue") or coaching.get("mechanical_issue") or ""),
         "status": "completed",
         "provider": provider,
     }
@@ -1944,7 +2043,101 @@ def parse_model_review(text: str, provider: str) -> Dict[str, Any]:
         result["extracted_text"] = str(parsed.get("extracted_text") or "")
     if parsed.get("scoreboard") is not None:
         result["scoreboard"] = parsed.get("scoreboard")
+    if parsed.get("hud_context") is not None:
+        result["hud_context"] = parsed.get("hud_context")
     return result
+
+
+def local_ai_review_schema() -> Dict[str, Any]:
+    return {
+        "summary": "one concise sentence",
+        "perception": {
+            "enemy_seen": "true/false/uncertain",
+            "enemy_frames": ["frame numbers or timestamps where enemy/contact cue is visible"],
+            "first_contact_time": "seconds before death or unknown",
+            "time_to_death": "seconds from first contact to death or unknown",
+            "crosshair_level": "head/chest/low/unknown",
+            "crosshair_alignment": "on_angle/wide/late_correction/unknown",
+            "peek_type": "jiggle/wide/swing/held_angle/rotation/unknown",
+            "movement_state": "standing/strafing/running/jumping/crouching/unknown",
+            "utility_seen": "none/own/team/enemy/unknown",
+            "weapon_seen": "weapon name or unknown",
+            "hp_seen": "number or unknown",
+            "score_seen": "score or unknown",
+            "teammates_alive_seen": "number or unknown",
+            "spike_state_seen": "carried/planted/dropped/unknown",
+            "evidence": ["visible evidence with frame references"],
+            "confidence": 0.0,
+        },
+        "coaching": {
+            "why_death_happened": "visible-evidence-based read",
+            "first_mistake": "earliest visible mistake or insufficient visual evidence",
+            "better_decision": "specific action the player should take",
+            "utility_issue": "yes/no/uncertain plus reason",
+            "crosshair_issue": "yes/no/uncertain plus reason",
+            "positioning_issue": "yes/no/uncertain plus reason",
+            "mechanical_issue": "yes/no/uncertain plus reason",
+            "drill": "one practice item",
+            "labels": ["1-4 normalized mistake labels"],
+            "confidence": 0.0,
+        },
+        "labels": ["same as coaching.labels"],
+        "better_play": "same as coaching.better_decision",
+        "drill": "same as coaching.drill",
+        "confidence": 0.0,
+    }
+
+
+def normalize_perception(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        payload = {}
+    fields = {
+        "enemy_seen": payload.get("enemy_seen", "uncertain"),
+        "enemy_frames": normalize_text_list(payload.get("enemy_frames") or payload.get("contact_frames") or []),
+        "first_contact_time": payload.get("first_contact_time") or payload.get("first_contact") or "unknown",
+        "time_to_death": payload.get("time_to_death") or "unknown",
+        "crosshair_level": payload.get("crosshair_level") or payload.get("crosshair") or "unknown",
+        "crosshair_alignment": payload.get("crosshair_alignment") or "unknown",
+        "peek_type": payload.get("peek_type") or "unknown",
+        "movement_state": payload.get("movement_state") or "unknown",
+        "utility_seen": payload.get("utility_seen") or payload.get("utility_used") or "unknown",
+        "weapon_seen": payload.get("weapon_seen") or payload.get("weapon") or "unknown",
+        "hp_seen": payload.get("hp_seen") or payload.get("hp") or "unknown",
+        "score_seen": payload.get("score_seen") or payload.get("score") or payload.get("scoreboard") or "unknown",
+        "teammates_alive_seen": payload.get("teammates_alive_seen") or payload.get("teammates_alive") or "unknown",
+        "spike_state_seen": payload.get("spike_state_seen") or payload.get("spike_state") or "unknown",
+        "evidence": normalize_text_list(payload.get("evidence") or payload.get("visible_evidence") or []),
+        "confidence": normalize_confidence(payload.get("confidence", 0.0)),
+    }
+    return fields
+
+
+def normalize_coaching(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "summary": str(payload.get("summary") or payload.get("why_death_happened") or ""),
+        "why_death_happened": str(payload.get("why_death_happened") or payload.get("summary") or payload.get("what_happened") or ""),
+        "first_mistake": str(payload.get("first_mistake") or ""),
+        "better_decision": str(payload.get("better_decision") or payload.get("better_play") or payload.get("recommendation") or ""),
+        "utility_issue": str(payload.get("utility_issue") or ""),
+        "crosshair_issue": str(payload.get("crosshair_issue") or ""),
+        "positioning_issue": str(payload.get("positioning_issue") or ""),
+        "mechanical_issue": str(payload.get("mechanical_issue") or ""),
+        "drill": str(payload.get("drill") or ""),
+        "labels": normalize_text_list(payload.get("labels") or payload.get("suggested_labels") or []),
+        "confidence": normalize_confidence(payload.get("confidence", 0.0)),
+    }
+
+
+def normalize_confidence(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.55
+    if number > 1:
+        number = number / 100.0
+    return round(max(0.0, min(1.0, number)), 2)
 
 
 def local_model_system_prompt(status: Dict[str, Any]) -> str:
@@ -1957,7 +2150,7 @@ def local_model_system_prompt(status: Dict[str, Any]) -> str:
         )
     return (
         "You are a VALORANT VOD coach reviewing an ordered local frame sequence before a death. "
-        "Return strict compact JSON with summary, visible_evidence, labels, better_play, drill, confidence. "
+        "Return strict compact JSON with separate perception and coaching objects. "
         "Analyze how the player clears, moves, aims, checks HUD/minimap, and enters the fight across time. Enemies may be visible for only one or two frames, so inspect the whole sequence frame-by-frame. "
         "Use only visible frame evidence. Do not invent hidden enemies, comms, unseen utility, prior context, or player intent. "
         "If the sequence is visually insufficient, say 'insufficient visual evidence' and set confidence below 0.45."
@@ -2153,7 +2346,7 @@ def save_setup_wizard(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("recording_dir", "auto_import", "auto_analysis", "frame_sample_rate", "detector_sensitivity"):
         if key in payload:
             db.set_setting(key, str(payload.get(key) or ""))
-    if any(key in payload for key in ("local_ai_provider", "local_ai_command", "local_ai_base_url", "local_ai_model", "local_ai_review_mode", "local_ai_review_fps")):
+    if any(key in payload for key in ("local_ai_provider", "local_ai_command", "local_ai_base_url", "local_ai_model", "local_ai_review_mode", "local_ai_review_fps", "local_ai_review_window_seconds")):
         save_local_ai_config(
             db,
             {
@@ -2163,6 +2356,7 @@ def save_setup_wizard(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "model": payload.get("local_ai_model"),
                 "review_mode": payload.get("local_ai_review_mode"),
                 "review_fps": payload.get("local_ai_review_fps"),
+                "review_window_seconds": payload.get("local_ai_review_window_seconds"),
             },
         )
     db.set_setting("setup_completed", "true")

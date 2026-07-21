@@ -1091,6 +1091,12 @@ video {
   font-size: 12px;
 }
 
+.perception-grid span {
+  border-color: rgba(77, 208, 225, 0.28);
+  color: #dff8fb;
+  background: rgba(77, 208, 225, 0.08);
+}
+
 .death-editor label {
   margin: 0;
 }

@@ -780,6 +780,7 @@ def build_local_ai_review_sequence(
     work_dir: Path,
     mode: str = "contact",
     fps_override: Any = None,
+    window_seconds: Any = None,
 ) -> Dict[str, Any]:
     death = db.get_death(death_id)
     if not death:
@@ -788,7 +789,7 @@ def build_local_ai_review_sequence(
     if not ffmpeg:
         return {"ok": False, "message": "ffmpeg is required for local AI sequence extraction.", "analysis": None}
 
-    profile = local_ai_sequence_profile(mode, fps_override)
+    profile = local_ai_sequence_profile(mode, fps_override, window_seconds)
     frame_dir = work_dir / "local-ai-sequences" / f"death-{death_id}"
     sequence = []
     source_kind = ""
@@ -845,8 +846,9 @@ def build_local_ai_review_sequence(
     return {"ok": True, "message": result["summary"], "analysis": result}
 
 
-def local_ai_sequence_profile(mode: str, fps_override: Any = None) -> Dict[str, Any]:
+def local_ai_sequence_profile(mode: str, fps_override: Any = None, window_seconds: Any = None) -> Dict[str, Any]:
     mode = str(mode or "contact").strip().lower()
+    window = normalize_review_window(window_seconds)
     profiles = {
         "context": {
             "id": "context",
@@ -875,6 +877,15 @@ def local_ai_sequence_profile(mode: str, fps_override: Any = None) -> Dict[str, 
                 {"label": "contact", "start_before": 5.0, "duration": 5.0, "fps": 5, "width": 576},
             ],
         },
+        "adaptive": {
+            "id": "adaptive",
+            "label": f"Adaptive: final {window}s with dense contact",
+            "limit": int((max(0, window - 5) * 2) + (min(window, 5) * 8)) + 8,
+            "segments": [
+                {"label": "setup-context", "start_before": float(window), "duration": max(0.5, float(window) - 5.0), "fps": 2, "width": 512},
+                {"label": "dense-contact", "start_before": min(float(window), 5.0), "duration": min(float(window), 5.0), "fps": 8, "width": 512},
+            ],
+        },
     }
     profile = profiles.get(mode) or profiles["contact"]
     result = {
@@ -886,11 +897,12 @@ def local_ai_sequence_profile(mode: str, fps_override: Any = None) -> Dict[str, 
     override = normalize_review_fps(fps_override)
     if override:
         for segment in result["segments"]:
-            if result["id"] == "hybrid" and "contact" not in str(segment.get("label") or ""):
+            if result["id"] in {"hybrid", "adaptive"} and "contact" not in str(segment.get("label") or ""):
                 continue
             segment["fps"] = override
         result["limit"] = int(sum(float(segment["duration"]) * int(segment["fps"]) for segment in result["segments"])) + 6
         result["label"] = f"{result['label']} with {override} FPS override"
+    result["window_seconds"] = window
     return result
 
 
@@ -904,6 +916,16 @@ def normalize_review_fps(value: Any) -> Optional[int]:
     if number <= 0:
         return None
     return max(1, min(20, number))
+
+
+def normalize_review_window(value: Any) -> int:
+    if value is None or value == "":
+        return 10
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return 10
+    return max(5, min(20, number))
 
 
 def sequence_frame_payload(

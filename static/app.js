@@ -302,12 +302,19 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
           <option value="burst" ${localAi.review_mode === "burst" ? "selected" : ""}>Burst: final 5s at 10 FPS, batched</option>
           <option value="hybrid" ${localAi.review_mode === "hybrid" ? "selected" : ""}>Hybrid: context + contact</option>
           <option value="context" ${localAi.review_mode === "context" ? "selected" : ""}>Context: final 10s at 2 FPS</option>
+          <option value="adaptive" ${localAi.review_mode === "adaptive" ? "selected" : ""}>Adaptive: configurable setup + dense contact</option>
         </select>
+      </label>
+      <label>Review window seconds
+        <input id="localAiReviewWindow" type="number" min="5" max="20" step="1" value="${escapeAttr(localAi.review_window_seconds || "10")}" />
       </label>
       <label>FPS override
         <input id="localAiReviewFps" type="number" min="1" max="20" step="1" value="${escapeAttr(localAi.review_fps || "")}" placeholder="mode default" />
       </label>
       <div class="row compact-actions">
+        <button class="secondary" data-action="set-local-ai-window" data-window="5">5s</button>
+        <button class="secondary" data-action="set-local-ai-window" data-window="10">10s</button>
+        <button class="secondary" data-action="set-local-ai-window" data-window="15">15s</button>
         <button class="secondary" data-action="set-local-ai-fps" data-fps="">Mode Default</button>
         <button class="secondary" data-action="set-local-ai-fps" data-fps="8">8 FPS</button>
         <button class="secondary" data-action="set-local-ai-fps" data-fps="12">12 FPS</button>
@@ -603,6 +610,7 @@ async function saveLocalAiConfig() {
     purpose: document.querySelector("#localAiPurpose").value,
     review_mode: document.querySelector("#localAiReviewMode").value,
     review_fps: document.querySelector("#localAiReviewFps").value,
+    review_window_seconds: document.querySelector("#localAiReviewWindow").value,
     model: document.querySelector("#localAiModel").value,
     base_url: document.querySelector("#localAiBaseUrl").value,
     command: document.querySelector("#localAiCommand").value,
@@ -620,11 +628,13 @@ function useLmStudioDefaults() {
   const purpose = document.querySelector("#localAiPurpose");
   const reviewMode = document.querySelector("#localAiReviewMode");
   const reviewFps = document.querySelector("#localAiReviewFps");
+  const reviewWindow = document.querySelector("#localAiReviewWindow");
   if (provider) provider.value = "lmstudio";
   if (baseUrl) baseUrl.value = "http://127.0.0.1:1234/v1";
   if (purpose) purpose.value = "coach";
   if (reviewMode) reviewMode.value = "contact";
   if (reviewFps) reviewFps.value = "";
+  if (reviewWindow) reviewWindow.value = "10";
   if (model && !model.value) model.value = "local-model";
   if (command) command.value = "";
   setStatus("LM Studio defaults filled. If LM Studio shows a specific model ID, paste it into Model before saving.");
@@ -638,11 +648,13 @@ function useOlmocrDefaults() {
   const purpose = document.querySelector("#localAiPurpose");
   const reviewMode = document.querySelector("#localAiReviewMode");
   const reviewFps = document.querySelector("#localAiReviewFps");
+  const reviewWindow = document.querySelector("#localAiReviewWindow");
   if (provider) provider.value = "lmstudio";
   if (baseUrl) baseUrl.value = "http://127.0.0.1:1234/v1";
   if (purpose) purpose.value = "ocr";
   if (reviewMode) reviewMode.value = "context";
   if (reviewFps) reviewFps.value = "";
+  if (reviewWindow) reviewWindow.value = "10";
   if (model) model.value = model.value || "olmocr";
   if (command) command.value = "";
   setStatus("olmOCR defaults filled. Paste the exact LM Studio model id if it differs, then Test Local AI and Save.");
@@ -655,12 +667,22 @@ function setLocalAiFps(value) {
   setStatus(value ? `Local AI FPS override set to ${value}. Save Local AI to apply.` : "Local AI FPS override cleared. Save Local AI to apply.");
 }
 
+function setLocalAiWindow(value) {
+  const input = document.querySelector("#localAiReviewWindow");
+  if (!input) return;
+  input.value = value || "10";
+  const mode = document.querySelector("#localAiReviewMode");
+  if (mode) mode.value = "adaptive";
+  setStatus(`Local AI adaptive window set to ${input.value}s. Save Local AI to apply.`);
+}
+
 async function testLocalAiConfig() {
   const payload = {
     provider: document.querySelector("#localAiProvider").value,
     purpose: document.querySelector("#localAiPurpose").value,
     review_mode: document.querySelector("#localAiReviewMode").value,
     review_fps: document.querySelector("#localAiReviewFps").value,
+    review_window_seconds: document.querySelector("#localAiReviewWindow").value,
     model: document.querySelector("#localAiModel").value,
     base_url: document.querySelector("#localAiBaseUrl").value,
     command: document.querySelector("#localAiCommand").value,
@@ -700,6 +722,7 @@ async function saveSetupWizard() {
       local_ai_command: document.querySelector("#localAiCommand")?.value || "",
       local_ai_review_mode: document.querySelector("#localAiReviewMode")?.value || "contact",
       local_ai_review_fps: document.querySelector("#localAiReviewFps")?.value || "",
+      local_ai_review_window_seconds: document.querySelector("#localAiReviewWindow")?.value || "10",
     }),
   });
   els.recordingDir.value = document.querySelector("#setupRecordingDir").value;
@@ -1311,6 +1334,7 @@ async function loadTrends() {
       </details>
       <div class="player-graph-grid">
         ${renderFoldableStatusPanel("Mistakes Across All Matches", trends.labels || {}, Math.max(1, deathCount), "No labeled mistakes yet.", true)}
+        ${renderImprovementTrendPanel(matches)}
         ${renderFoldableStatusPanel("Deaths By Map", trends.by_map || {}, Math.max(1, deathCount), "No map data yet.")}
         ${renderFoldableStatusPanel("Deaths By Agent", trends.by_agent || {}, Math.max(1, deathCount), "No agent data yet.")}
         <details class="status-panel fold-panel">
@@ -1323,6 +1347,47 @@ async function loadTrends() {
       </div>
     </section>
   `;
+}
+
+function renderImprovementTrendPanel(matches) {
+  const recent = (matches || []).slice(0, 6);
+  if (recent.length < 2) {
+    return `
+      <details class="status-panel fold-panel">
+        <summary><span>Improvement Trend</span><strong>new</strong></summary>
+        <p class="muted">Add at least two reviewed matches to compare whether repeated mistakes are improving.</p>
+      </details>
+    `;
+  }
+  const latest = recent[0];
+  const previous = recent.slice(1);
+  const topLabels = Object.keys(latest.labels || {}).length ? Object.keys(latest.labels || {}) : Object.keys(previous[0]?.labels || {});
+  const rows = topLabels.slice(0, 5).map((label) => {
+    const latestRate = ratePerDeath(Number((latest.labels || {})[label] || 0), Number(latest.death_count || 0));
+    const previousRate = previous.reduce((sum, match) => sum + ratePerDeath(Number((match.labels || {})[label] || 0), Number(match.death_count || 0)), 0) / Math.max(1, previous.length);
+    const delta = latestRate - previousRate;
+    const direction = delta < -0.05 ? "improving" : delta > 0.05 ? "worse" : "flat";
+    return `
+      <div class="status-bar-row">
+        <div>
+          <span>${escapeHtml(titleCase(label))}</span>
+          <strong>${direction} ${delta >= 0 ? "+" : ""}${Math.round(delta * 100)}%</strong>
+        </div>
+        <i style="width:${Math.max(6, Math.min(100, Math.round(Math.abs(delta) * 100)))}%"></i>
+      </div>
+    `;
+  }).join("");
+  return `
+    <details class="status-panel fold-panel" open>
+      <summary><span>Improvement Trend</span><strong>${recent.length}</strong></summary>
+      <p class="muted">Latest match compared with the previous ${previous.length} reviewed match(es), normalized by death count.</p>
+      <div class="status-bars">${rows || '<p class="muted">No repeated labels yet.</p>'}</div>
+    </details>
+  `;
+}
+
+function ratePerDeath(count, deaths) {
+  return deaths > 0 ? count / deaths : 0;
 }
 
 async function loadCoach() {
@@ -1591,6 +1656,8 @@ function renderPlayerStatusReport(report, coachMoments = []) {
   const roundKnownCount = deaths.filter((death) => death.round_number).length;
   const roundDisplayCount = deaths.filter((death) => death.round_number || death.display_round_number).length;
   const causeCounts = collectDeathCauseCounts(deaths);
+  const perceptionCounts = collectPerceptionCounts(deaths);
+  const coachingIssueCounts = collectCoachingIssueCounts(deaths);
   const labelCounts = collectStoredLabelCounts(report);
   const phaseCounts = collectPhaseCounts(deaths);
   const roundCounts = collectRoundCounts(deaths);
@@ -1636,12 +1703,44 @@ function renderPlayerStatusReport(report, coachMoments = []) {
       <div class="player-graph-grid">
         ${renderStatusPanel("Mistakes From Saved Markers", labelCounts, deathCount, "Save corrected labels to improve this chart.")}
         ${renderStatusPanel("Death Causes From Coach Reads", causeCounts, Math.max(1, reviewedCount + localAiCount), "Generate advice or Clip Coach reviews for clearer causes.")}
+        ${renderStatusPanel("Clip Perception Reads", perceptionCounts, Math.max(1, localAiCount), "Run Clip Coach to track enemy visibility, crosshair level, and peek type.")}
+        ${renderStatusPanel("Coaching Issue Types", coachingIssueCounts, Math.max(1, localAiCount), "Structured Clip Coach reviews will separate utility, crosshair, positioning, and mechanics.")}
         ${renderStatusPanel("Deaths By Round Phase", phaseCounts, deathCount, "Round phase uses reconstructed round timing when available.")}
         ${renderStatusPanel("Deaths By Round", roundCounts, deathCount, "Estimated rounds are marked until scoreboard OCR/manual save confirms them.")}
       </div>
       ${coachMoments.length ? `<p class="muted">${coachMoments.length} whole-VOD coach moment(s) found outside death markers.</p>` : ""}
     </section>
   `;
+}
+
+function collectPerceptionCounts(deaths) {
+  const counts = {};
+  for (const death of deaths || []) {
+    const perception = death.local_ai_review?.payload?.perception || {};
+    if (perception.enemy_seen && perception.enemy_seen !== "unknown") addCount(counts, `enemy ${perception.enemy_seen}`, 1);
+    if (perception.crosshair_level && perception.crosshair_level !== "unknown") addCount(counts, `crosshair ${perception.crosshair_level}`, 1);
+    if (perception.peek_type && perception.peek_type !== "unknown") addCount(counts, `peek ${perception.peek_type}`, 1);
+    if (perception.utility_seen && perception.utility_seen !== "unknown") addCount(counts, `utility ${perception.utility_seen}`, 1);
+  }
+  return counts;
+}
+
+function collectCoachingIssueCounts(deaths) {
+  const counts = {};
+  for (const death of deaths || []) {
+    const payload = death.local_ai_review?.payload || {};
+    const coaching = payload.coaching || {};
+    for (const [key, label] of [
+      ["utility_issue", "utility"],
+      ["crosshair_issue", "crosshair"],
+      ["positioning_issue", "positioning"],
+      ["mechanical_issue", "mechanics"],
+    ]) {
+      const value = String(coaching[key] || payload[key] || "").toLowerCase();
+      if (value && !value.includes("no") && !value.includes("none") && !value.includes("insufficient")) addCount(counts, label, 1);
+    }
+  }
+  return counts;
 }
 
 function collectStoredLabelCounts(report) {
@@ -2332,6 +2431,8 @@ function renderLocalAiReview(row, death = {}) {
     return "";
   }
   const payload = row.payload;
+  const perception = payload.perception || {};
+  const coaching = payload.coaching || {};
   const labels = (payload.labels || []).map((label) => `<span class="tag">${escapeHtml(label)}</span>`).join(" ");
   const evidence = (payload.visible_evidence || payload.evidence || [])
     .filter(Boolean)
@@ -2352,6 +2453,8 @@ function renderLocalAiReview(row, death = {}) {
       </div>
       <p>${escapeHtml(payload.summary || "")}</p>
       ${memoryFocus ? `<p><strong>Coach memory context:</strong> ${escapeHtml(memoryFocus)}</p>` : ""}
+      ${renderPerceptionRead(perception)}
+      ${renderCoachingRead(coaching, payload)}
       ${evidence ? `<p><strong>Visible evidence</strong></p><ul class="compact-list">${evidence}</ul>` : ""}
       ${payload.extracted_text ? `<p><strong>Extracted text:</strong> ${escapeHtml(payload.extracted_text)}</p>` : ""}
       ${payload.scoreboard ? `<p><strong>Scoreboard:</strong> ${escapeHtml(JSON.stringify(payload.scoreboard))}</p>` : ""}
@@ -2363,6 +2466,51 @@ function renderLocalAiReview(row, death = {}) {
       </div>
     </div>
   `;
+}
+
+function renderPerceptionRead(perception) {
+  if (!perception || !Object.keys(perception).length) return "";
+  const rows = [
+    ["Enemy", perception.enemy_seen],
+    ["Contact", perception.first_contact_time],
+    ["TTD", perception.time_to_death],
+    ["Crosshair", perception.crosshair_level],
+    ["Alignment", perception.crosshair_alignment],
+    ["Peek", perception.peek_type],
+    ["Utility", perception.utility_seen],
+    ["Weapon", perception.weapon_seen],
+    ["HP", perception.hp_seen],
+    ["Score", perception.score_seen],
+    ["Spike", perception.spike_state_seen],
+  ].filter(([, value]) => value !== undefined && value !== null && String(value).trim() && String(value).trim() !== "unknown");
+  if (!rows.length) return "";
+  return `
+    <div class="coach-progress perception-grid">
+      ${rows.slice(0, 10).map(([label, value]) => `<span>${escapeHtml(label)}: ${escapeHtml(formatPerceptionValue(value))}</span>`).join("")}
+    </div>
+  `;
+}
+
+function renderCoachingRead(coaching, payload) {
+  const items = [
+    ["First mistake", coaching.first_mistake || payload.first_mistake],
+    ["Utility", coaching.utility_issue || payload.utility_issue],
+    ["Crosshair", coaching.crosshair_issue || payload.crosshair_issue],
+    ["Positioning", coaching.positioning_issue || payload.positioning_issue],
+    ["Mechanics", coaching.mechanical_issue || payload.mechanical_issue],
+  ].filter(([, value]) => value && String(value).trim());
+  if (!items.length) return "";
+  return `
+    <ul class="compact-list">
+      ${items.map(([label, value]) => `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</li>`).join("")}
+    </ul>
+  `;
+}
+
+function formatPerceptionValue(value) {
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return value;
 }
 
 function fillReviewDraft(button) {
@@ -2760,6 +2908,7 @@ els.automationView.addEventListener("click", (event) => {
   if (action === "use-lmstudio-defaults") useLmStudioDefaults();
   if (action === "use-olmocr-defaults") useOlmocrDefaults();
   if (action === "set-local-ai-fps") setLocalAiFps(button.dataset.fps);
+  if (action === "set-local-ai-window") setLocalAiWindow(button.dataset.window);
   if (action === "test-local-ai") testLocalAiConfig().catch((err) => setStatus(err.message));
   if (action === "save-local-ai") saveLocalAiConfig().catch((err) => setStatus(err.message));
   if (action === "load-prompt") loadPromptEditor();
