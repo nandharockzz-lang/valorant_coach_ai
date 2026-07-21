@@ -1030,15 +1030,19 @@ async function analyzeMatch(id) {
   await loadTrends();
 }
 
-async function suggestDeaths(id) {
+async function suggestDeaths(id, options = {}) {
   currentMatchId = id;
   activeCoachJobId = null;
-  setStatus(`Find Deaths queued for match #${id}...`, { state: "busy" });
-  const payload = await api(`/api/matches/${id}/suggest-deaths`, { method: "POST" });
+  const hasRange = (options.start_seconds !== null && options.start_seconds !== undefined) || (options.end_seconds !== null && options.end_seconds !== undefined);
+  const rangeLabel = hasRange
+    ? ` ${formatScanRange(options.start_seconds, options.end_seconds)}`
+    : "";
+  setStatus(`Find Deaths${rangeLabel} queued for match #${id}...`, { state: "busy" });
+  const payload = await api(`/api/matches/${id}/suggest-deaths`, { method: "POST", body: JSON.stringify(options) });
   if (payload.job_id) {
     activeCoachJobId = payload.job_id;
     completedJobIds.delete(Number(payload.job_id));
-    setStatus(`Find Deaths running as job #${payload.job_id}.`, { state: "busy", progress: 1 });
+    setStatus(`Find Deaths${rangeLabel} running as job #${payload.job_id}.`, { state: "busy", progress: 1 });
     await Promise.all([loadReport(id), pollJobs()]);
     ensureJobPolling();
     return;
@@ -1046,6 +1050,51 @@ async function suggestDeaths(id) {
   const detector = payload.detector || {};
   setStatus(payload.message, { state: detector.warning ? "error" : "idle" });
   await loadReport(id);
+}
+
+async function suggestDeathsRange(button) {
+  const card = button.closest(".match-item");
+  const id = button.dataset.id;
+  const start = parseTimeInput(card?.querySelector(`[data-field="scan_start_${id}"]`)?.value || "");
+  const end = parseTimeInput(card?.querySelector(`[data-field="scan_end_${id}"]`)?.value || "");
+  const limitValue = Number(card?.querySelector(`[data-field="scan_limit_${id}"]`)?.value || 0);
+  if (start === null && end === null) {
+    throw new Error("Enter a start or end time for range scan.");
+  }
+  if (start !== null && end !== null && end <= start) {
+    throw new Error("End time must be after start time.");
+  }
+  const options = {
+    start_seconds: start,
+    end_seconds: end,
+    limit: Number.isFinite(limitValue) && limitValue > 0 ? Math.round(limitValue) : undefined,
+  };
+  await suggestDeaths(id, options);
+}
+
+function parseTimeInput(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    return Number(text);
+  }
+  const parts = text.split(":").map((part) => Number(part));
+  if (parts.some((part) => !Number.isFinite(part) || part < 0) || parts.length > 3) {
+    throw new Error(`Invalid time: ${text}`);
+  }
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+  throw new Error(`Invalid time: ${text}`);
+}
+
+function formatScanRange(start, end) {
+  if (start !== null && start !== undefined && end !== null && end !== undefined) return `from ${formatTs(start)} to ${formatTs(end)}`;
+  if (start !== null && start !== undefined) return `from ${formatTs(start)}`;
+  return `until ${formatTs(end)}`;
 }
 
 async function extractClips(id) {
@@ -1403,6 +1452,12 @@ async function loadMatches() {
         </div>
         <details class="advanced-actions">
           <summary>Advanced tools</summary>
+          <div class="row compact-range">
+            <label>Scan start <input data-field="scan_start_${match.id}" type="text" placeholder="10:00" /></label>
+            <label>Scan end <input data-field="scan_end_${match.id}" type="text" placeholder="13:00" /></label>
+            <label>Limit <input data-field="scan_limit_${match.id}" type="number" min="1" max="100" value="5" /></label>
+            <button class="secondary" data-action="suggest-range" data-id="${match.id}">Find Range</button>
+          </div>
           <div class="row">
             <button data-action="pipeline" data-id="${match.id}">Full Pipeline</button>
             <button data-action="batch-deaths" data-id="${match.id}">Batch Deaths</button>
@@ -2763,6 +2818,7 @@ function renderLocalAiReview(row, death = {}) {
       ${renderMultiPassReview(payload.multi_pass || {}, payload.multi_pass_reviews || [])}
       <details class="advanced-actions">
         <summary>Segment reads and raw evidence</summary>
+        ${renderReviewDiagnostics(payload.review_diagnostics || {}, payload.fallback_support || {})}
         ${renderReviewPipeline(payload.review_pipeline || {})}
         ${renderDeterministicSignals(payload.deterministic_signals || {})}
         ${renderSegmentReviews(payload.segment_reviews || [])}
@@ -2781,6 +2837,28 @@ function renderLocalAiReview(row, death = {}) {
       </div>
       ${renderClipTrainingLabel(death, trainingLabel)}
     </div>
+  `;
+}
+
+function renderReviewDiagnostics(diagnostics, support) {
+  if (!Object.keys(diagnostics || {}).length && !Object.keys(support || {}).length) return "";
+  const warnings = (diagnostics.warnings || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const supportEvidence = (support.visible_evidence || []).slice(0, 5).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  return `
+    <details class="multi-pass-review">
+      <summary>
+        <span>Model Diagnostics</span>
+        <strong>${diagnostics.model_weak ? "weak" : "ok"}</strong>
+      </summary>
+      <ul class="compact-list">
+        <li><strong>Frames:</strong> prepared ${escapeHtml(diagnostics.prepared_frames ?? "")}, sent ${escapeHtml(diagnostics.sent_frames ?? "")}</li>
+        <li><strong>Sent range:</strong> ${escapeHtml(diagnostics.sent_frame_range || "unknown")}</li>
+        ${diagnostics.trimmed ? "<li>Prompt or frames were trimmed for context budget.</li>" : ""}
+        ${warnings}
+      </ul>
+      ${support.summary ? `<p><strong>Local detector support:</strong> ${escapeHtml(support.summary)}</p>` : ""}
+      ${supportEvidence ? `<ul class="compact-list">${supportEvidence}</ul>` : ""}
+    </details>
   `;
 }
 
@@ -3481,6 +3559,7 @@ els.matchesList.addEventListener("click", (event) => {
   if (action === "batch-deaths") startDeathBatch(id).catch((err) => setStatus(err.message));
   if (action === "analyze") analyzeMatch(id).catch((err) => setStatus(err.message));
   if (action === "suggest") suggestDeaths(id).catch((err) => setStatus(err.message));
+  if (action === "suggest-range") suggestDeathsRange(button).catch((err) => setStatus(err.message));
   if (action === "hud") runMatchAnalysis(id, "hud").catch((err) => setStatus(err.message));
   if (action === "minimap") runMatchAnalysis(id, "minimap").catch((err) => setStatus(err.message));
   if (action === "ocr") runMatchAnalysis(id, "ocr").catch((err) => setStatus(err.message));

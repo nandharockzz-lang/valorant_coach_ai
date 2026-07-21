@@ -60,6 +60,7 @@ def suggest_deaths(
     match_id: int,
     work_dir: Path,
     update: Optional[Callable[[str, int], None]] = None,
+    options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     match = db.get_match(match_id)
     if not match:
@@ -77,12 +78,21 @@ def suggest_deaths(
         }
 
     frame_dir = work_dir / FRAME_DIR_NAME / f"match-{match_id}"
-    db.log("info", "death_detector", f"Find Deaths started for match #{match_id}")
+    scan_options = normalize_death_scan_options(options)
+    db.log("info", "death_detector", f"Find Deaths started for match #{match_id}", {"scan_options": scan_options})
     progress(update, "Find Deaths: cleaning old pending duplicates.", 3)
     cleaned = db.cleanup_pending_death_suggestions(match_id)
     fps = death_scan_fps(db)
-    progress(update, f"Find Deaths: extracting scan frames at {fps} FPS.", 8)
-    frames = extract_scan_frames(ffmpeg, video_path, frame_dir, fps=fps)
+    range_label = scan_range_label(scan_options)
+    progress(update, f"Find Deaths: extracting {range_label} scan frames at {fps} FPS.", 8)
+    frames = extract_scan_frames(
+        ffmpeg,
+        video_path,
+        frame_dir,
+        fps=fps,
+        start_seconds=scan_options.get("start_seconds"),
+        end_seconds=scan_options.get("end_seconds"),
+    )
     progress(update, f"Find Deaths: extracted {len(frames)} frame(s); building visual timeline.", 24)
     feedback = db.detector_feedback_summary()
     feedback["sensitivity"] = db.get_setting("detector_sensitivity", "normal")
@@ -98,7 +108,10 @@ def suggest_deaths(
         fps=fps,
         update=update,
         max_ocr_frames=max_ocr_frames,
+        timestamp_offset=float(scan_options.get("start_seconds") or 0.0),
     )
+    if scan_options.get("limit"):
+        suggestions = sorted(suggestions, key=lambda item: float(item.get("timestamp") or 0.0))[: int(scan_options["limit"])]
     progress(update, f"Find Deaths: saving {len(suggestions)} candidate marker(s).", 90)
     saved = []
     skipped = 0
@@ -119,7 +132,12 @@ def suggest_deaths(
         saved.append(item)
     cleaned += db.cleanup_pending_death_suggestions(match_id)
     saved = [item for item in saved if db.get_death_suggestion(int(item["id"]))]
-    message = f"Found {len(saved)} new suggested death marker(s)."
+    message = f"Found {len(saved)} new suggested death marker(s)"
+    if range_label != "full-video":
+        message += f" in {range_label}"
+    if scan_options.get("limit"):
+        message += f" with limit {scan_options['limit']}"
+    message += "."
     if skipped or cleaned:
         message += f" Skipped/cleaned {skipped + cleaned} duplicate or already-reviewed candidate(s)."
     detector = death_detector_summary(saved, player_name, ocr_available)
@@ -131,7 +149,7 @@ def suggest_deaths(
         "info",
         "death_detector",
         f"Find Deaths completed for match #{match_id}",
-        {"saved": len(saved), "skipped_or_cleaned": skipped + cleaned, "detector": detector},
+        {"saved": len(saved), "skipped_or_cleaned": skipped + cleaned, "detector": detector, "scan_options": scan_options},
     )
     return {
         "ok": True,
@@ -139,10 +157,67 @@ def suggest_deaths(
         "suggestions": saved,
         "skipped_duplicates": skipped + cleaned,
         "detector": detector,
+        "scan_options": scan_options,
     }
 
 
-def extract_scan_frames(ffmpeg: str, video_path: Path, frame_dir: Path, fps: str = "1") -> List[Path]:
+def normalize_death_scan_options(options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    options = options or {}
+    start = optional_nonnegative_float(options.get("start_seconds") if "start_seconds" in options else options.get("start"))
+    end = optional_nonnegative_float(options.get("end_seconds") if "end_seconds" in options else options.get("end"))
+    if start is not None and end is not None and end <= start:
+        end = None
+    limit = optional_positive_int(options.get("limit"))
+    return {
+        "start_seconds": start,
+        "end_seconds": end,
+        "limit": limit,
+        "mode": "range" if start is not None or end is not None else "full",
+    }
+
+
+def optional_nonnegative_float(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, number)
+
+
+def optional_positive_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return max(1, min(100, number))
+
+
+def scan_range_label(options: Dict[str, Any]) -> str:
+    start = options.get("start_seconds")
+    end = options.get("end_seconds")
+    if start is None and end is None:
+        return "full-video"
+    if start is not None and end is not None:
+        return f"{format_seconds(start)}-{format_seconds(end)}"
+    if start is not None:
+        return f"from {format_seconds(start)}"
+    return f"until {format_seconds(end)}"
+
+
+def extract_scan_frames(
+    ffmpeg: str,
+    video_path: Path,
+    frame_dir: Path,
+    fps: str = "1",
+    start_seconds: Optional[float] = None,
+    end_seconds: Optional[float] = None,
+) -> List[Path]:
     frame_dir.mkdir(parents=True, exist_ok=True)
     for old in frame_dir.glob("scan-*.jpg"):
         old.unlink()
@@ -153,14 +228,15 @@ def extract_scan_frames(ffmpeg: str, video_path: Path, frame_dir: Path, fps: str
         "-loglevel",
         "error",
         "-y",
-        "-i",
-        str(video_path),
-        "-vf",
-        f"fps={fps},scale=640:-1",
-        "-q:v",
-        "4",
-        output_pattern,
     ]
+    if start_seconds is not None:
+        cmd.extend(["-ss", f"{max(0.0, float(start_seconds)):.2f}"])
+    cmd.extend(["-i", str(video_path)])
+    if end_seconds is not None:
+        duration = float(end_seconds) - float(start_seconds or 0.0)
+        if duration > 0:
+            cmd.extend(["-t", f"{duration:.2f}"])
+    cmd.extend(["-vf", f"fps={fps},scale=640:-1", "-q:v", "4", output_pattern])
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "ffmpeg frame extraction failed")
@@ -196,6 +272,7 @@ def analyze_frames(
     fps: str = "1",
     update: Optional[Callable[[str, int], None]] = None,
     max_ocr_frames: int = 180,
+    timestamp_offset: float = 0.0,
 ) -> List[Dict[str, Any]]:
     sample_interval = sample_interval_seconds(fps)
     timeline = build_timeline(
@@ -205,6 +282,7 @@ def analyze_frames(
         update=update,
         progress_start=24,
         progress_end=52,
+        timestamp_offset=timestamp_offset,
     )
     player_deaths = detect_player_deaths_from_hud(
         timeline,
@@ -228,6 +306,7 @@ def build_timeline(
     update: Optional[Callable[[str, int], None]] = None,
     progress_start: int = 0,
     progress_end: int = 0,
+    timestamp_offset: float = 0.0,
 ) -> List[FrameMetrics]:
     timeline: List[FrameMetrics] = []
     previous: Optional[np.ndarray] = None
@@ -246,7 +325,8 @@ def build_timeline(
         previous = arr
         previous_minimap = minimap
         previous_crosshair = crosshair
-        timeline.append(compute_metrics(frame, float(index) * sample_interval, arr, motion, regions, minimap_motion, crosshair_drift))
+        timestamp = float(timestamp_offset or 0.0) + float(index) * sample_interval
+        timeline.append(compute_metrics(frame, timestamp, arr, motion, regions, minimap_motion, crosshair_drift))
         if update and progress_end > progress_start:
             percent = progress_start + int(((index + 1) / total) * (progress_end - progress_start))
             if percent != last_progress and (index == 0 or index + 1 == total or (index + 1) % 25 == 0):

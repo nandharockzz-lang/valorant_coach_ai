@@ -412,9 +412,10 @@ class CoachHandler(BaseHTTPRequestHandler):
                 self.json_response({"ok": True, "guided_coach": guided, "coach": build_coach_dashboard(DB)})
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/suggest-deaths"):
                 match_id = int(parsed.path.split("/")[3])
+                payload = self.read_json()
                 job_id = JOBS.start(
                     f"Find Deaths match #{match_id}",
-                    lambda update, mid=match_id: run_suggest_deaths_job(DB, mid, PATHS, update),
+                    lambda update, mid=match_id, options=payload: run_suggest_deaths_job(DB, mid, PATHS, update, options=options),
                 )
                 self.json_response({"ok": True, "job_id": job_id})
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/events-v2"):

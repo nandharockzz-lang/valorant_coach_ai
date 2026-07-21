@@ -318,9 +318,10 @@ def run_suggest_deaths_job(
     match_id: int,
     dirs: Dict[str, Path],
     update: Callable[[str, int], None],
+    options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     update("Find Deaths: queued.", 1)
-    result = suggest_deaths(db, match_id, dirs["vision"], update)
+    result = suggest_deaths(db, match_id, dirs["vision"], update, options=options)
     update("Find Deaths: refreshing match report.", 96)
     write_markdown_report(db, dirs["reports"], match_id)
     return result
@@ -974,7 +975,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.20.9-local"
+APP_VERSION = "0.21.1-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -985,6 +986,8 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Keep Clip Coach local-model output as the primary review and show deterministic detector evidence as diagnostics instead of replacing weak reviews with generic fallback text.",
+            "Add Find Deaths range testing so a match can scan only a selected start/end time with an optional saved-candidate limit.",
             "Fix Clip Coach regression by preserving representative frames under context budget, shifting combat-report-only anchors earlier, and falling back to deterministic visual coaching when the local model refuses.",
             "Prevent long-lived combat reports from creating repeated death suggestions by detecting combat-report onset only.",
             "Let Find Deaths create lower-confidence suggestions from visible combat report when killfeed/player-name OCR is blocked.",
@@ -3579,6 +3582,7 @@ def run_local_http_review_batched(
         review["frame_range"] = batch_frame_range(chunk)
         chunk_reviews.append(review)
     combined = synthesize_batched_reviews(db, death_id, payload, status, chunk_reviews)
+    combined = promote_best_batch_if_synthesis_is_weak(combined, chunk_reviews)
     combined["batch_reviews"] = chunk_reviews
     combined["batches"] = len(chunk_reviews)
     combined = enrich_model_review_result(combined, payload)
@@ -3732,6 +3736,34 @@ def fallback_batched_review(provider: str, chunk_reviews: List[Dict[str, Any]]) 
         "status": "completed",
         "provider": provider,
     }
+
+
+def promote_best_batch_if_synthesis_is_weak(combined: Dict[str, Any], chunk_reviews: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not review_needs_deterministic_fallback(combined):
+        return combined
+    candidates = [review for review in chunk_reviews if not review_needs_deterministic_fallback(review)]
+    if not candidates:
+        return combined
+    best = max(candidates, key=review_usefulness_score)
+    promoted = dict(best)
+    promoted["summary"] = str(best.get("summary") or "Best visual batch review selected because synthesis was weak.")
+    promoted["kind"] = "local_ai_review"
+    promoted["status"] = "completed"
+    promoted["provider"] = combined.get("provider") or best.get("provider")
+    promoted["synthesis_original_summary"] = combined.get("summary") or ""
+    promoted["batch_promotion_reason"] = "Batch synthesis was weak; selected the strongest visual batch review instead."
+    return promoted
+
+
+def review_usefulness_score(review: Dict[str, Any]) -> float:
+    score = normalize_confidence(review.get("confidence", 0.0)) * 3.0
+    score += min(4, len(review.get("visible_evidence") or [])) * 0.35
+    score += min(4, len(review.get("evidence_timeline") or [])) * 0.35
+    if str(review.get("better_play") or "").strip():
+        score += 1.0
+    if review.get("labels"):
+        score += 0.5
+    return score
 
 
 def extract_model_response_text(response: Any) -> str:
@@ -4012,32 +4044,41 @@ def enrich_model_review_result(result: Dict[str, Any], payload: Dict[str, Any]) 
 
 
 def apply_deterministic_review_fallback(result: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
-    if not review_needs_deterministic_fallback(result):
-        return result
-    fallback = deterministic_review_fallback(payload)
-    if not fallback:
-        return result
     merged = dict(result)
-    merged["summary"] = fallback["summary"]
-    merged["visible_evidence"] = fallback["visible_evidence"]
-    merged["labels"] = fallback["labels"]
-    merged["better_play"] = fallback["better_play"]
-    merged["drill"] = fallback["drill"]
-    merged["confidence"] = fallback["confidence"]
-    merged["perception"] = fallback["perception"]
-    merged["coaching"] = fallback["coaching"]
-    merged["first_mistake"] = fallback["coaching"]["first_mistake"]
-    merged["crosshair_issue"] = fallback["coaching"]["crosshair_issue"]
-    merged["positioning_issue"] = fallback["coaching"]["positioning_issue"]
-    merged["mechanical_issue"] = fallback["coaching"]["mechanical_issue"]
-    merged["fallback_reason"] = "Local VLM returned insufficient evidence; deterministic visual signals produced a low-confidence coach read."
-    merged["model_original_summary"] = result.get("summary") or ""
-    merged["evidence_timeline"] = build_review_evidence_timeline(merged, payload.get("keyframes") or [])
-    merged["segment_reviews"] = merge_segment_reviews(payload.get("segments") or [], merged.get("segment_reviews") or [], merged)
-    merged["claim_confidence"] = build_claim_confidence(merged)
+    support = deterministic_review_fallback(payload)
+    diagnostics = review_diagnostics(result, payload, support)
+    merged["review_diagnostics"] = diagnostics
+    if support:
+        merged["fallback_support"] = support
+    if review_needs_deterministic_fallback(result):
+        merged["fallback_reason"] = "Local VLM review was weak; deterministic visual signals were attached as supporting diagnostics without replacing the model output."
     merged["review_quality"] = score_review_quality(merged)
     merged["review_pipeline"] = build_review_pipeline_audit(payload, merged)
     return merged
+
+
+def review_diagnostics(result: Dict[str, Any], payload: Dict[str, Any], support: Dict[str, Any]) -> Dict[str, Any]:
+    budget = payload.get("request_budget") or {}
+    sent_frames = int(budget.get("sent_frames") or len(payload.get("keyframes") or []))
+    prepared_frames = int(budget.get("original_frames") or len(payload.get("keyframes") or []))
+    warnings = []
+    if sent_frames <= 3:
+        warnings.append("Very few images reached the local model; increase context limit, lower image token estimate, or use a smaller review mode.")
+    if review_needs_deterministic_fallback(result):
+        warnings.append("The local model response was weak or insufficient; deterministic detector evidence is shown separately.")
+    if not payload.get("keyframes"):
+        warnings.append("No clip frames were available for the local model.")
+    return {
+        "prepared_frames": prepared_frames,
+        "sent_frames": sent_frames,
+        "sent_frame_range": budget.get("sent_frame_range") or batch_frame_range(payload.get("keyframes") or []),
+        "trimmed": bool(budget.get("trimmed")),
+        "model_summary": result.get("summary") or "",
+        "model_confidence": result.get("confidence"),
+        "model_weak": review_needs_deterministic_fallback(result),
+        "support_available": bool(support),
+        "warnings": warnings,
+    }
 
 
 def review_needs_deterministic_fallback(result: Dict[str, Any]) -> bool:
@@ -4079,7 +4120,7 @@ def deterministic_review_fallback(payload: Dict[str, Any]) -> Dict[str, Any]:
     first_mistake = labels[0] if labels else "review fight setup and crosshair readiness"
     better_play = deterministic_better_play(labels, first_contact)
     drill = deterministic_drill(labels)
-    summary = f"Low-confidence local read: {first_mistake}; verify against the clip because the VLM did not produce enough visual evidence."
+    summary = f"Local detector support: {first_mistake}."
     confidence = min(0.52, max(0.34, float(visual.get("confidence") or 0.0) * 0.65))
     return {
         "summary": summary,

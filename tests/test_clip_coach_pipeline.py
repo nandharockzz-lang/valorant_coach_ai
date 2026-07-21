@@ -1,11 +1,15 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PIL import Image
 
 from valorant_coach.automation import (
     apply_deterministic_review_fallback,
     budget_local_model_payload,
     local_model_system_prompt,
 )
-from valorant_coach.vision import local_ai_death_anchor_timestamp
+from valorant_coach.vision import build_timeline, local_ai_death_anchor_timestamp, normalize_death_scan_options
 
 
 def frame(index, relative_second):
@@ -41,7 +45,7 @@ class ClipCoachPipelineTests(unittest.TestCase):
         self.assertEqual(budget["sent_frames"], len(sent))
         self.assertTrue(budget["trimmed"])
 
-    def test_deterministic_fallback_replaces_empty_insufficient_review(self):
+    def test_deterministic_fallback_does_not_replace_model_review(self):
         result = {
             "summary": "insufficient visual evidence",
             "better_play": "",
@@ -69,10 +73,12 @@ class ClipCoachPipelineTests(unittest.TestCase):
 
         updated = apply_deterministic_review_fallback(result, payload)
 
-        self.assertNotEqual(updated["summary"], "insufficient visual evidence")
+        self.assertEqual(updated["summary"], "insufficient visual evidence")
         self.assertIn("fallback_reason", updated)
-        self.assertTrue(updated["better_play"])
-        self.assertIn("crosshair readiness", updated["labels"])
+        self.assertIn("fallback_support", updated)
+        self.assertTrue(updated["fallback_support"]["better_play"])
+        self.assertIn("crosshair readiness", updated["fallback_support"]["labels"])
+        self.assertTrue(updated["review_diagnostics"]["model_weak"])
 
     def test_combat_report_marker_anchor_shifts_earlier(self):
         death = {
@@ -86,6 +92,24 @@ class ClipCoachPipelineTests(unittest.TestCase):
         self.assertEqual(anchor["source"], "combat_report_only_adjusted")
         self.assertEqual(anchor["original_timestamp"], 100.0)
         self.assertLess(anchor["timestamp"], 100.0)
+
+    def test_death_scan_options_accept_range_and_limit(self):
+        options = normalize_death_scan_options({"start_seconds": "60", "end_seconds": "120", "limit": "5"})
+
+        self.assertEqual(options["start_seconds"], 60.0)
+        self.assertEqual(options["end_seconds"], 120.0)
+        self.assertEqual(options["limit"], 5)
+        self.assertEqual(options["mode"], "range")
+
+    def test_timeline_timestamp_offset_preserves_vod_time(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "frame.jpg"
+            Image.new("RGB", (64, 64), "black").save(path)
+
+            timeline = build_timeline([path], sample_interval=1.0, timestamp_offset=90.0)
+
+        self.assertEqual(len(timeline), 1)
+        self.assertEqual(timeline[0].timestamp, 90.0)
 
 
 if __name__ == "__main__":

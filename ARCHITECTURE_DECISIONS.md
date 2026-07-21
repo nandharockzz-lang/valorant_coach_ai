@@ -58,6 +58,7 @@ Current flow:
 - Every local model request must fit the configured context window, default `8192` tokens. The app should reserve output tokens, estimate image tokens, trim prompt context, and reduce frame count before sending requests to LM Studio/Ollama.
 - Frame trimming must preserve a representative clip timeline instead of keeping only the final frames, because combat report markers may be post-death and fast contact can happen before the last sampled frames.
 - "Insufficient visual evidence" is a field/segment-level result, not a default whole-review outcome. If enemy contact is not visible but crosshair, movement, HUD, minimap, or death-cue evidence exists, Clip Coach should still provide low-confidence actionable coaching.
+- Deterministic detector evidence is supporting diagnostics, not the primary review. It must not replace the local VLM summary unless the model request fails completely.
 - Combat-report-only markers are treated as potentially late anchors; Clip Coach shifts the review anchor earlier and records marker-quality metadata for debugging.
 
 ### ADR-004: Knowledge Base Role
@@ -101,6 +102,7 @@ Current flow:
 
 **Implications:**
 - The Find Deaths button queues a cancellable job and reports stage-level progress.
+- Detector testing should use range-limited Find Deaths runs with optional candidate caps instead of forcing full-VOD scans for every tuning check.
 - OCR scans are bounded: use lower death-scan FPS than general analysis, pre-filter likely HUD frames before Tesseract, cap OCR frames, and timeout each OCR crop.
 - If the player-name killfeed is blocked by facecam or overlay, visible combat report may create lower-confidence death suggestions instead of being ignored.
 - Combat-report-only detection must emit on panel appearance, then wait for the panel to disappear before re-arming; sustained post-death combat report visibility is not a new death.
