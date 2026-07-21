@@ -3,6 +3,7 @@ import mimetypes
 import os
 import shutil
 import sys
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Tuple
@@ -586,6 +587,7 @@ class CoachHandler(BaseHTTPRequestHandler):
             else:
                 self.not_found()
         except Exception as exc:
+            DB.add_log("error", "http", str(exc), {"path": parsed.path, "traceback": traceback.format_exc()})
             self.error_response(500, str(exc))
 
     def do_DELETE(self) -> None:
@@ -604,6 +606,7 @@ class CoachHandler(BaseHTTPRequestHandler):
             else:
                 self.not_found()
         except Exception as exc:
+            DB.add_log("error", "http", str(exc), {"path": parsed.path, "traceback": traceback.format_exc()})
             self.error_response(500, str(exc))
 
     def handle_match_get(self, path: str) -> None:
@@ -773,8 +776,12 @@ def main() -> None:
 
 
 def normalize_labels(value: Any) -> list:
+    if value is None:
+        return []
     if isinstance(value, str):
         value = [item.strip() for item in value.split(",")]
+    elif not isinstance(value, (list, tuple, set)):
+        value = [value]
     return [str(item).strip().lower() for item in value if str(item).strip()]
 
 

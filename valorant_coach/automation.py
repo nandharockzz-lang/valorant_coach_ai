@@ -952,7 +952,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.20.1-local"
+APP_VERSION = "0.20.2-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -963,6 +963,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Harden Clip Coach against null local-model response fields and log full server tracebacks for failed API calls.",
             "Show whether the player-name killfeed/combat-report death detector ran, including OCR availability and fallback counts.",
             "Make player-name killfeed OCR plus combat-report confirmation the primary death suggestion detector, with configurable in-game name and evidence crops.",
             "Add adaptive detector profile, clip signal timeline UI support, training label dashboard data, semantic minimap/HUD reads, richer coach memory inputs, and multi-pass local vision review.",
@@ -1089,9 +1090,15 @@ def delete_playbook(db: Database, key: str) -> Dict[str, Any]:
 
 
 def normalize_text_list(value: Any) -> List[str]:
+    if value is None:
+        return []
     if isinstance(value, str):
         normalized = value.replace(",", "\n")
         return [item.strip() for item in normalized.splitlines() if item.strip()]
+    if isinstance(value, dict):
+        value = [value.get("value") or value.get("label") or value.get("text") or value.get("summary") or ""]
+    elif not isinstance(value, (list, tuple, set)):
+        value = [value]
     return [str(item).strip() for item in value if str(item).strip()]
 
 
@@ -2612,7 +2619,7 @@ def run_local_http_text(
             "max_tokens": max_tokens,
         }
     response = post_json(endpoint, body, timeout=timeout)
-    return response.get("response") or (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or json.dumps(response)
+    return extract_model_response_text(response)
 
 
 def parse_context_extraction(text: str, provider: str) -> Dict[str, Any]:
@@ -3217,7 +3224,7 @@ def synthesize_multipass_reviews(
                 "max_tokens": 900,
             }
         response = post_json(endpoint, body, timeout=180)
-        text = response.get("response") or (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or json.dumps(response)
+        text = extract_model_response_text(response)
         result = parse_model_review(text, provider)
     except Exception:
         result = fallback_batched_review(provider, pass_reviews)
@@ -3258,7 +3265,7 @@ def run_local_http_review_single(db: Database, death_id: int, payload: Dict[str,
         response = post_json(endpoint, body, timeout=240)
     except Exception as exc:
         return {"ok": False, "message": f"{provider} request failed: {exc}", "status": status}
-    text = response.get("response") or (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or json.dumps(response)
+    text = extract_model_response_text(response)
     result = parse_model_review(text, provider)
     result = enrich_model_review_result(result, payload)
     if save:
@@ -3345,7 +3352,7 @@ def synthesize_batched_reviews(
         }
     try:
         response = post_json(endpoint, body, timeout=180)
-        text = response.get("response") or (((response.get("choices") or [{}])[0].get("message") or {}).get("content")) or json.dumps(response)
+        text = extract_model_response_text(response)
         result = parse_model_review(text, provider)
     except Exception:
         result = fallback_batched_review(provider, chunk_reviews)
@@ -3432,6 +3439,47 @@ def fallback_batched_review(provider: str, chunk_reviews: List[Dict[str, Any]]) 
         "status": "completed",
         "provider": provider,
     }
+
+
+def extract_model_response_text(response: Any) -> str:
+    if not isinstance(response, dict):
+        return str(response or "{}")
+    direct = response.get("response")
+    if direct is not None:
+        return model_content_to_text(direct)
+    choices = response.get("choices") or []
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get("message") if isinstance(first, dict) else {}
+        if isinstance(message, dict) and message.get("content") is not None:
+            return model_content_to_text(message.get("content"))
+        if isinstance(first, dict) and first.get("text") is not None:
+            return model_content_to_text(first.get("text"))
+    return json.dumps(response)
+
+
+def model_content_to_text(content: Any) -> str:
+    if content is None:
+        return "{}"
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("text") is not None:
+                    parts.append(str(item.get("text") or ""))
+                elif item.get("content") is not None:
+                    parts.append(str(item.get("content") or ""))
+            elif item is not None:
+                parts.append(str(item))
+        return "\n".join(part for part in parts if part).strip() or "{}"
+    if isinstance(content, dict):
+        for key in ("text", "content", "summary", "response"):
+            if content.get(key) is not None:
+                return model_content_to_text(content.get(key))
+        return json.dumps(content)
+    return str(content)
 
 
 def post_json(url: str, body: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
