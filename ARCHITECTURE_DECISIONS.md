@@ -99,6 +99,7 @@ Current flow:
 **Implications:**
 - The Find Deaths button queues a cancellable job and reports stage-level progress.
 - OCR scans are bounded: use lower death-scan FPS than general analysis, pre-filter likely HUD frames before Tesseract, cap OCR frames, and timeout each OCR crop.
+- If the player-name killfeed is blocked by facecam or overlay, visible combat report may create lower-confidence death suggestions instead of being ignored.
 - Confirmed markers must remain preserved; only pending duplicate suggestions are cleaned.
 
 ## Skill Usage

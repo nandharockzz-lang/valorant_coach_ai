@@ -498,7 +498,8 @@ def detect_player_deaths_from_hud(
         else:
             killfeed_path = ""
             combat_path = ""
-        combat_score = max(float(item.combat_report_score or 0), combat_report_text_score(combat_text))
+        combat_text_score = combat_report_text_score(combat_text)
+        combat_score = max(float(item.combat_report_score or 0), combat_text_score)
         killfeed_visual = max(float(item.killfeed_red or 0), red_or_blue_score(killfeed_crop))
         if name_score >= 0.72 and combat_score >= 0.34:
             confidence = min(0.98, 0.55 + name_score * 0.25 + combat_score * 0.18 + min(killfeed_visual, 0.25))
@@ -525,12 +526,49 @@ def detect_player_deaths_from_hud(
                     },
                 }
             )
+        elif combat_report_confirms_death(combat_score, combat_text_score, item):
+            confidence = min(0.84, 0.47 + combat_score * 0.22 + combat_text_score * 0.18)
+            raw_hits.append(
+                {
+                    "timestamp": item.timestamp,
+                    "confidence": round(confidence, 2),
+                    "reason": (
+                        "Primary detector: combat report appeared but killfeed/player-name confirmation was unavailable. "
+                        f"Combat score {combat_score:.2f}; OCR text: {short_evidence(combat_text)}"
+                    ),
+                    "frame_path": str(item.path.resolve()),
+                    "metrics": {
+                        "detector": "combat_report_only",
+                        "player_name": player_name,
+                        "name_match_score": round(name_score, 3),
+                        "combat_report_score": round(combat_score, 3),
+                        "combat_report_text_score": round(combat_text_score, 3),
+                        "killfeed_activity": round(killfeed_visual, 3),
+                        "killfeed_text": killfeed_text[:220],
+                        "combat_report_text": combat_text[:220],
+                        "killfeed_crop": str(killfeed_path) if killfeed_path else "",
+                        "combat_report_crop": str(combat_path) if combat_path else "",
+                    },
+                }
+            )
         if update and progress_end > progress_start:
             percent = progress_start + int(((index + 1) / total) * (progress_end - progress_start))
             if percent != last_progress and (index == 0 or index + 1 == total or (index + 1) % 10 == 0):
                 last_progress = percent
                 progress(update, f"Find Deaths: OCR HUD pass ({index + 1}/{total}).", percent)
     return cluster_player_death_hits(raw_hits)
+
+
+def combat_report_confirms_death(combat_score: float, text_score: float, item: FrameMetrics) -> bool:
+    visual = float(item.combat_report_score or 0)
+    death_score = float(item.death_score or 0)
+    if text_score >= 0.45 and combat_score >= 0.34:
+        return True
+    if visual >= 0.58 and death_score >= 0.42:
+        return True
+    if visual >= 0.66:
+        return True
+    return False
 
 
 def select_ocr_death_frames(timeline: List[FrameMetrics], max_ocr_frames: int = 180) -> List[FrameMetrics]:
@@ -586,28 +624,35 @@ def merge_primary_and_fallback_death_candidates(primary: List[Dict[str, Any]], f
 
 def death_detector_summary(suggestions: List[Dict[str, Any]], player_name: str, ocr_available: bool) -> Dict[str, Any]:
     primary = 0
+    combat_only = 0
     fallback = 0
     for item in suggestions:
         metrics = item.get("metrics") or {}
         detector = str(metrics.get("detector") or "")
         reason = str(item.get("reason") or "")
-        if detector == "player_name_killfeed_and_combat_report" or reason.startswith("Primary detector:"):
+        if detector == "player_name_killfeed_and_combat_report":
+            primary += 1
+        elif detector == "combat_report_only":
+            combat_only += 1
+        elif reason.startswith("Primary detector:"):
             primary += 1
         elif reason.startswith("Fallback detector:"):
             fallback += 1
     warning = ""
     if not ocr_available:
         warning = "Player-name killfeed detection is unavailable because Tesseract OCR is not installed; only the fallback visual detector ran."
-    elif primary == 0:
-        warning = f"Player-name killfeed OCR ran for '{player_name}' but found no confirmed killfeed plus combat-report deaths."
+    elif primary == 0 and combat_only == 0:
+        warning = f"Player-name killfeed OCR ran for '{player_name}' but found no confirmed killfeed, combat-report-only, or fallback deaths."
     message = (
-        f"VALORANT HUD detector used player '{player_name}': {primary} killfeed/combat-report hit(s), "
+        f"VALORANT HUD detector used player '{player_name}': {primary} killfeed-confirmed hit(s), "
+        f"{combat_only} combat-report-only hit(s), "
         f"{fallback} fallback visual hit(s)."
     )
     return {
         "player_name": player_name,
         "ocr_available": ocr_available,
         "primary_hits": primary,
+        "combat_report_only_hits": combat_only,
         "fallback_hits": fallback,
         "warning": warning,
         "message": message,
