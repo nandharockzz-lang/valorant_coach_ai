@@ -90,6 +90,17 @@ Current flow:
 - `/api/logs` and the Automation/Tools Logs panel are the primary local debugging surface.
 - Server 500s should include local traceback logs in `app_logs`.
 
+### ADR-007: Long Video Scans Must Be Background Jobs
+
+**Decision:** Find Deaths and other full-VOD scans must run through the job system instead of blocking the HTTP request.
+
+**Rationale:** Full VOD death detection can involve frame extraction, image metric passes, and OCR. Running that synchronously made the UI appear frozen for long recordings.
+
+**Implications:**
+- The Find Deaths button queues a cancellable job and reports stage-level progress.
+- OCR scans are bounded: use lower death-scan FPS than general analysis, pre-filter likely HUD frames before Tesseract, cap OCR frames, and timeout each OCR crop.
+- Confirmed markers must remain preserved; only pending duplicate suggestions are cleaned.
+
 ## Skill Usage
 
 - Use `senior-architect` when making architecture decisions, ADRs, major trade-offs, or system design changes.

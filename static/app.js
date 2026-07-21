@@ -259,6 +259,7 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
           ${["light", "standard", "dense"].map((item) => `<option value="${item}" ${settings.frame_sample_rate === item ? "selected" : ""}>${item}</option>`).join("")}
         </select>
       </label>
+      <label>Find Deaths OCR cap <input id="deathScanMaxOcrFrames" type="number" min="30" max="600" value="${escapeAttr(settings.death_scan_max_ocr_frames || "180")}" /></label>
       <label>Skip completed
         <select id="skipCompletedAnalysis">
           <option value="true" ${settings.skip_completed_analysis !== "false" ? "selected" : ""}>On</option>
@@ -521,6 +522,7 @@ async function saveAutomationSettings() {
       detector_sensitivity: document.querySelector("#detectorSensitivity").value,
       enemy_detector_command: document.querySelector("#enemyDetectorCommand")?.value || "",
       frame_sample_rate: document.querySelector("#frameSampleRate").value,
+      death_scan_max_ocr_frames: document.querySelector("#deathScanMaxOcrFrames").value,
       skip_completed_analysis: document.querySelector("#skipCompletedAnalysis").value,
       max_concurrent_jobs: document.querySelector("#maxConcurrentJobs").value,
       privacy_mode: "local-only",
@@ -1029,8 +1031,18 @@ async function analyzeMatch(id) {
 }
 
 async function suggestDeaths(id) {
-  setStatus(`Scanning match #${id} for death candidates...`);
+  currentMatchId = id;
+  activeCoachJobId = null;
+  setStatus(`Find Deaths queued for match #${id}...`, { state: "busy" });
   const payload = await api(`/api/matches/${id}/suggest-deaths`, { method: "POST" });
+  if (payload.job_id) {
+    activeCoachJobId = payload.job_id;
+    completedJobIds.delete(Number(payload.job_id));
+    setStatus(`Find Deaths running as job #${payload.job_id}.`, { state: "busy", progress: 1 });
+    await Promise.all([loadReport(id), pollJobs()]);
+    ensureJobPolling();
+    return;
+  }
   const detector = payload.detector || {};
   setStatus(payload.message, { state: detector.warning ? "error" : "idle" });
   await loadReport(id);
@@ -1131,7 +1143,11 @@ async function pollJobs() {
   }
   if (activeJob && ["complete", "failed", "cancelled"].includes(activeJob.status) && !completedJobIds.has(Number(activeJob.id))) {
     completedJobIds.add(Number(activeJob.id));
-    setStatus(activeJob.status === "complete" ? "Coach job complete. Review markers and advice are refreshed." : `Coach job ${activeJob.status}: ${activeJob.message || ""}`, { state: activeJob.status === "complete" ? "idle" : "error" });
+    const label = activeJob.name || `Job #${activeJob.id}`;
+    const completeMessage = String(label).toLowerCase().includes("find deaths")
+      ? "Find Deaths complete. Review suggested markers below the video."
+      : `${label} complete. Review markers and advice are refreshed.`;
+    setStatus(activeJob.status === "complete" ? completeMessage : `${label} ${activeJob.status}: ${activeJob.message || ""}`, { state: activeJob.status === "complete" ? "idle" : "error" });
     if (currentMatchId) {
       await Promise.all([loadMatches(), loadReport(currentMatchId), loadTrends(), loadCoach()]);
     }
@@ -2167,12 +2183,12 @@ function renderJobProgress(matchId) {
     <section class="job-progress ${statusClass}">
       <div class="job-progress-head">
         <div>
-          <h3>Auto Coach Progress</h3>
+          <h3>Job Progress</h3>
           <p>${escapeHtml(job.name)} · ${escapeHtml(job.status)}</p>
         </div>
         <strong>${progress}%</strong>
       </div>
-      <div class="progress-track" aria-label="Auto Coach progress">
+      <div class="progress-track" aria-label="Job progress">
         <span class="progress-fill" style="width:${progress}%"></span>
       </div>
       <p class="job-message">${escapeHtml(job.message || "Queued.")}</p>
@@ -2190,7 +2206,7 @@ function renderJobProgressPanel() {
 }
 
 function findVisibleCoachJob(matchId) {
-  const targetNames = [`Auto coach match #${matchId}`, `Full VOD coach match #${matchId}`];
+  const targetNames = [`Auto coach match #${matchId}`, `Full VOD coach match #${matchId}`, `Find Deaths match #${matchId}`];
   if (activeCoachJobId) {
     const active = latestJobs.find((job) => Number(job.id) === Number(activeCoachJobId));
     if (active) return active;

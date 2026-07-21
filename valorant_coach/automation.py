@@ -276,7 +276,7 @@ def run_match_pipeline(
         ("crosshair", 58, lambda: score_crosshair_match(db, match_id, dirs["vision"])),
         ("ocr", 68, lambda: analyze_ocr(db, match_id, dirs["deep"])),
         ("scoreboard_rounds", 72, lambda: infer_rounds_from_scoreboard(db, match_id, dirs["deep"])),
-        ("suggest_deaths", 76, lambda: suggest_deaths(db, match_id, dirs["vision"])),
+        ("suggest_deaths", 76, lambda: suggest_deaths(db, match_id, dirs["vision"], scaled_job_update(update, 72, 82))),
         ("clips", 84, lambda: extract_clips_for_match(db, match_id, dirs["clips"])),
         ("death_batch", 92, lambda: run_death_batch(db, match_id, dirs)),
         ("review_queue", 96, lambda: build_review_queue(db, match_id)),
@@ -301,6 +301,27 @@ def run_match_pipeline(
         except Exception as exc:
             result["steps"].append({name: {"ok": False, "message": str(exc)}})
 
+    write_markdown_report(db, dirs["reports"], match_id)
+    return result
+
+
+def scaled_job_update(update: Callable[[str, int], None], start: int, end: int) -> Callable[[str, int], None]:
+    def inner(message: str, progress: int) -> None:
+        value = start + int((max(0, min(100, int(progress))) / 100) * (end - start))
+        update(message, value)
+
+    return inner
+
+
+def run_suggest_deaths_job(
+    db: Database,
+    match_id: int,
+    dirs: Dict[str, Path],
+    update: Callable[[str, int], None],
+) -> Dict[str, Any]:
+    update("Find Deaths: queued.", 1)
+    result = suggest_deaths(db, match_id, dirs["vision"], update)
+    update("Find Deaths: refreshing match report.", 96)
     write_markdown_report(db, dirs["reports"], match_id)
     return result
 
@@ -338,7 +359,7 @@ def run_auto_coach_pipeline(
         ("crosshair", "scoring crosshair placement", 47, lambda: score_crosshair_match(db, match_id, dirs["vision"])),
         ("ocr", "running local OCR on calibrated HUD regions", 55, lambda: analyze_ocr(db, match_id, dirs["deep"])),
         ("scoreboard_rounds", "reading top scoreboard scores for round numbers", 59, lambda: infer_rounds_from_scoreboard(db, match_id, dirs["deep"])),
-        ("suggest_deaths", "finding likely deaths from video signals", 64, lambda: suggest_deaths(db, match_id, dirs["vision"])),
+        ("suggest_deaths", "finding likely deaths from video signals", 64, lambda: suggest_deaths(db, match_id, dirs["vision"], scaled_job_update(update, 60, 69))),
     ]
     for name, message, progress, fn in steps:
         update(f"Auto Coach: {message}.", progress)
@@ -953,7 +974,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.20.5-local"
+APP_VERSION = "0.20.6-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -964,6 +985,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Run Find Deaths as a background job with live progress, capped OCR frames, lower scan FPS, and per-crop Tesseract timeouts.",
             "Cap Clip Coach local-model requests to the configured context window by trimming prompt context and frame count before POST.",
             "Fix Windows cp1252 decode crashes from ffmpeg, Tesseract, git, and custom local-model subprocess output.",
             "Save successful Local AI tests for Clip Coach and log each frame-prep/model-request stage.",

@@ -51,6 +51,7 @@ from .automation import (
     run_full_vod_coach_pipeline,
     run_local_ai_review,
     run_match_pipeline,
+    run_suggest_deaths_job,
     save_benchmark_label,
     save_clip_review_feedback,
     save_clip_training_label,
@@ -94,7 +95,6 @@ from .vision import (
     describe_clip,
     reconstruct_rounds,
     score_crosshair_match,
-    suggest_deaths,
     understand_clip,
 )
 
@@ -259,6 +259,7 @@ class CoachHandler(BaseHTTPRequestHandler):
                     "enemy_detector_command",
                     "ocr_engine",
                     "frame_sample_rate",
+                    "death_scan_max_ocr_frames",
                     "storage_cleanup_days",
                     "max_concurrent_jobs",
                     "skip_completed_analysis",
@@ -411,7 +412,11 @@ class CoachHandler(BaseHTTPRequestHandler):
                 self.json_response({"ok": True, "guided_coach": guided, "coach": build_coach_dashboard(DB)})
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/suggest-deaths"):
                 match_id = int(parsed.path.split("/")[3])
-                self.json_response(suggest_deaths(DB, match_id, VISION_DIR))
+                job_id = JOBS.start(
+                    f"Find Deaths match #{match_id}",
+                    lambda update, mid=match_id: run_suggest_deaths_job(DB, mid, PATHS, update),
+                )
+                self.json_response({"ok": True, "job_id": job_id})
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/events-v2"):
                 match_id = int(parsed.path.split("/")[3])
                 self.json_response(analyze_match_events(DB, match_id, VISION_DIR))
@@ -671,6 +676,7 @@ class CoachHandler(BaseHTTPRequestHandler):
             "enemy_detector_command": DB.get_setting("enemy_detector_command", ""),
             "ocr_engine": DB.get_setting("ocr_engine", "tesseract"),
             "frame_sample_rate": DB.get_setting("frame_sample_rate", "standard"),
+            "death_scan_max_ocr_frames": DB.get_setting("death_scan_max_ocr_frames", "180"),
             "storage_cleanup_days": DB.get_setting("storage_cleanup_days", "30"),
             "max_concurrent_jobs": DB.get_setting("max_concurrent_jobs", "1"),
             "skip_completed_analysis": DB.get_setting("skip_completed_analysis", "true"),

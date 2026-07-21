@@ -4,7 +4,7 @@ import sys
 from difflib import SequenceMatcher
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps
@@ -55,7 +55,12 @@ def ffmpeg_path() -> str:
     return ""
 
 
-def suggest_deaths(db: Database, match_id: int, work_dir: Path) -> Dict[str, Any]:
+def suggest_deaths(
+    db: Database,
+    match_id: int,
+    work_dir: Path,
+    update: Optional[Callable[[str, int], None]] = None,
+) -> Dict[str, Any]:
     match = db.get_match(match_id)
     if not match:
         raise ValueError(f"Unknown match id: {match_id}")
@@ -72,14 +77,29 @@ def suggest_deaths(db: Database, match_id: int, work_dir: Path) -> Dict[str, Any
         }
 
     frame_dir = work_dir / FRAME_DIR_NAME / f"match-{match_id}"
+    db.log("info", "death_detector", f"Find Deaths started for match #{match_id}")
+    progress(update, "Find Deaths: cleaning old pending duplicates.", 3)
     cleaned = db.cleanup_pending_death_suggestions(match_id)
-    fps = scan_fps(db)
+    fps = death_scan_fps(db)
+    progress(update, f"Find Deaths: extracting scan frames at {fps} FPS.", 8)
     frames = extract_scan_frames(ffmpeg, video_path, frame_dir, fps=fps)
+    progress(update, f"Find Deaths: extracted {len(frames)} frame(s); building visual timeline.", 24)
     feedback = db.detector_feedback_summary()
     feedback["sensitivity"] = db.get_setting("detector_sensitivity", "normal")
     player_name = str(db.get_setting("player_name", DEFAULT_PLAYER_NAME) or DEFAULT_PLAYER_NAME).strip()
     ocr_available = bool(tesseract_path())
-    suggestions = analyze_frames(frames, db.get_calibration(), feedback, player_name=player_name, evidence_dir=frame_dir / "evidence", fps=fps)
+    max_ocr_frames = death_scan_max_ocr_frames(db)
+    suggestions = analyze_frames(
+        frames,
+        db.get_calibration(),
+        feedback,
+        player_name=player_name,
+        evidence_dir=frame_dir / "evidence",
+        fps=fps,
+        update=update,
+        max_ocr_frames=max_ocr_frames,
+    )
+    progress(update, f"Find Deaths: saving {len(suggestions)} candidate marker(s).", 90)
     saved = []
     skipped = 0
     seen_ids = set()
@@ -107,6 +127,12 @@ def suggest_deaths(db: Database, match_id: int, work_dir: Path) -> Dict[str, Any
         message += f" {detector['warning']}"
     else:
         message += f" {detector['message']}"
+    db.log(
+        "info",
+        "death_detector",
+        f"Find Deaths completed for match #{match_id}",
+        {"saved": len(saved), "skipped_or_cleaned": skipped + cleaned, "detector": detector},
+    )
     return {
         "ok": True,
         "message": message,
@@ -168,19 +194,47 @@ def analyze_frames(
     player_name: str = DEFAULT_PLAYER_NAME,
     evidence_dir: Optional[Path] = None,
     fps: str = "1",
+    update: Optional[Callable[[str, int], None]] = None,
+    max_ocr_frames: int = 180,
 ) -> List[Dict[str, Any]]:
     sample_interval = sample_interval_seconds(fps)
-    timeline = build_timeline(frames, calibration, sample_interval=sample_interval)
-    player_deaths = detect_player_deaths_from_hud(timeline, calibration or default_calibration(), player_name, evidence_dir)
+    timeline = build_timeline(
+        frames,
+        calibration,
+        sample_interval=sample_interval,
+        update=update,
+        progress_start=24,
+        progress_end=52,
+    )
+    player_deaths = detect_player_deaths_from_hud(
+        timeline,
+        calibration or default_calibration(),
+        player_name,
+        evidence_dir,
+        update=update,
+        max_ocr_frames=max_ocr_frames,
+        progress_start=54,
+        progress_end=84,
+    )
+    progress(update, "Find Deaths: running fallback visual grouping.", 86)
     generic = cluster_death_candidates(timeline, adaptive_death_threshold(feedback))
     return merge_primary_and_fallback_death_candidates(player_deaths, generic)
 
 
-def build_timeline(frames: List[Path], calibration: Optional[Dict[str, Dict[str, float]]] = None, sample_interval: float = 1.0) -> List[FrameMetrics]:
+def build_timeline(
+    frames: List[Path],
+    calibration: Optional[Dict[str, Dict[str, float]]] = None,
+    sample_interval: float = 1.0,
+    update: Optional[Callable[[str, int], None]] = None,
+    progress_start: int = 0,
+    progress_end: int = 0,
+) -> List[FrameMetrics]:
     timeline: List[FrameMetrics] = []
     previous: Optional[np.ndarray] = None
     previous_minimap: Optional[np.ndarray] = None
     previous_crosshair: Optional[np.ndarray] = None
+    total = max(1, len(frames))
+    last_progress = -1
     for index, frame in enumerate(frames):
         arr = load_frame(frame)
         motion = frame_motion(previous, arr) if previous is not None else 0.0
@@ -193,6 +247,11 @@ def build_timeline(frames: List[Path], calibration: Optional[Dict[str, Dict[str,
         previous_minimap = minimap
         previous_crosshair = crosshair
         timeline.append(compute_metrics(frame, float(index) * sample_interval, arr, motion, regions, minimap_motion, crosshair_drift))
+        if update and progress_end > progress_start:
+            percent = progress_start + int(((index + 1) / total) * (progress_end - progress_start))
+            if percent != last_progress and (index == 0 or index + 1 == total or (index + 1) % 25 == 0):
+                last_progress = percent
+                progress(update, f"Find Deaths: building visual timeline ({index + 1}/{total}).", percent)
     return timeline
 
 
@@ -399,6 +458,10 @@ def detect_player_deaths_from_hud(
     calibration: Dict[str, Dict[str, float]],
     player_name: str,
     evidence_dir: Optional[Path] = None,
+    update: Optional[Callable[[str, int], None]] = None,
+    max_ocr_frames: int = 180,
+    progress_start: int = 54,
+    progress_end: int = 84,
 ) -> List[Dict[str, Any]]:
     player_name = (player_name or DEFAULT_PLAYER_NAME).strip()
     if not timeline or not player_name:
@@ -407,7 +470,19 @@ def detect_player_deaths_from_hud(
     evidence_dir = evidence_dir or (timeline[0].path.parent / "evidence")
     evidence_dir.mkdir(parents=True, exist_ok=True)
     raw_hits: List[Dict[str, Any]] = []
-    for item in timeline:
+    if tesseract:
+        ocr_items = select_ocr_death_frames(timeline, max_ocr_frames=max_ocr_frames)
+        progress(
+            update,
+            f"Find Deaths: OCR will inspect {len(ocr_items)} likely HUD frame(s), capped at {max_ocr_frames}.",
+            progress_start,
+        )
+    else:
+        ocr_items = []
+        progress(update, "Find Deaths: Tesseract missing; using visual fallback only.", progress_start)
+    total = max(1, len(ocr_items))
+    last_progress = -1
+    for index, item in enumerate(ocr_items):
         arr = load_frame(item.path)
         killfeed_crop = crop_region(arr, calibration.get("killfeed") or default_calibration()["killfeed"])
         combat_crop = crop_region(arr, calibration.get("combat_report") or default_calibration()["combat_report"])
@@ -450,7 +525,35 @@ def detect_player_deaths_from_hud(
                     },
                 }
             )
+        if update and progress_end > progress_start:
+            percent = progress_start + int(((index + 1) / total) * (progress_end - progress_start))
+            if percent != last_progress and (index == 0 or index + 1 == total or (index + 1) % 10 == 0):
+                last_progress = percent
+                progress(update, f"Find Deaths: OCR HUD pass ({index + 1}/{total}).", percent)
     return cluster_player_death_hits(raw_hits)
+
+
+def select_ocr_death_frames(timeline: List[FrameMetrics], max_ocr_frames: int = 180) -> List[FrameMetrics]:
+    limit = max(30, min(600, int(max_ocr_frames or 180)))
+    scored: List[tuple[float, FrameMetrics]] = []
+    for item in timeline:
+        score = max(
+            float(item.killfeed_red or 0) * 1.45,
+            float(item.combat_report_score or 0) * 1.35,
+            float(item.death_score or 0),
+            float(item.center_red or 0) * 0.75,
+        )
+        if (
+            float(item.killfeed_red or 0) >= 0.04
+            or float(item.combat_report_score or 0) >= 0.10
+            or float(item.death_score or 0) >= 0.50
+            or float(item.center_red or 0) >= 0.16
+        ):
+            scored.append((score, item))
+    if not scored:
+        return []
+    selected = [item for _, item in sorted(scored, key=lambda row: row[0], reverse=True)[:limit]]
+    return sorted(selected, key=lambda item: item.timestamp)
 
 
 def cluster_player_death_hits(hits: List[Dict[str, Any]], gap_seconds: float = 5.0) -> List[Dict[str, Any]]:
@@ -537,9 +640,19 @@ def tesseract_path() -> str:
     return ""
 
 
-def run_tesseract_text(tesseract: str, image_path: Path, psm: str = "6") -> str:
+def run_tesseract_text(tesseract: str, image_path: Path, psm: str = "6", timeout_seconds: float = 1.5) -> str:
     cmd = [tesseract, str(image_path), "stdout", "--psm", psm]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return ""
     if result.returncode != 0:
         return ""
     return " ".join(result.stdout.split())
@@ -1485,6 +1598,25 @@ def format_seconds(value: Any) -> str:
 
 def death_round_label(death: Dict[str, Any]) -> str:
     return f"Round {death.get('round_number')}" if death.get("round_number") else "Round unknown"
+
+
+def progress(update: Optional[Callable[[str, int], None]], message: str, percent: int) -> None:
+    if update:
+        update(message, max(0, min(100, int(percent))))
+
+
+def death_scan_fps(db: Database) -> str:
+    rate = str(db.get_setting("frame_sample_rate", "standard") or "standard")
+    return {"light": "1/4", "standard": "1/2", "dense": "1"}.get(rate, "1/2")
+
+
+def death_scan_max_ocr_frames(db: Database) -> int:
+    raw = db.get_setting("death_scan_max_ocr_frames", "180")
+    try:
+        value = int(float(str(raw or "180")))
+    except ValueError:
+        value = 180
+    return max(30, min(600, value))
 
 
 def scan_fps(db: Database) -> str:
