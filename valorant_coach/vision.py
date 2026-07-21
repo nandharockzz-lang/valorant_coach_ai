@@ -1270,6 +1270,7 @@ def build_local_ai_review_sequence(
     frame_dir = work_dir / "local-ai-sequences" / f"death-{death_id}"
     sequence = []
     source_kind = ""
+    marker_quality: Dict[str, Any] = {}
 
     for segment_index, segment in enumerate(profile["segments"], start=1):
         source_info = local_ai_sequence_source(db, death, float(segment["start_before"]), float(segment["duration"]))
@@ -1283,6 +1284,7 @@ def build_local_ai_review_sequence(
         if not source.exists():
             return {"ok": False, "message": "Video source is missing.", "analysis": None}
         source_kind = source_info["kind"]
+        marker_quality = source_info.get("marker_quality") or marker_quality
         segment_dir = frame_dir / f"segment-{segment_index}-{segment['label']}"
         frames = extract_sequence_frames(
             ffmpeg,
@@ -1317,6 +1319,7 @@ def build_local_ai_review_sequence(
         "mode": profile["id"],
         "mode_label": profile["label"],
         "source": source_kind,
+        "marker_quality": marker_quality,
         "confidence": 0.65 if sequence else 0.0,
     }
     db.save_death_analysis(death_id, "local_ai_sequence", result)
@@ -1444,16 +1447,18 @@ def local_ai_sequence_source(db: Database, death: Dict[str, Any], start_before: 
     if match and timestamp is not None:
         video_path = Path(match["video_path"])
         if video_path.exists():
-            desired_start = float(timestamp) - start_before
+            anchor = local_ai_death_anchor_timestamp(death)
+            desired_start = float(anchor["timestamp"]) - start_before
             desired_end = desired_start + duration
             start = max(0.0, desired_start)
-            end = min(float(timestamp), desired_end)
+            end = min(float(anchor["timestamp"]), desired_end)
             return {
                 "kind": "full-vod",
                 "source": video_path,
                 "start": start,
                 "duration": max(0.5, end - start),
                 "vod_timestamp_start": start,
+                "marker_quality": anchor,
             }
     clip_path = death.get("clip_path")
     if clip_path and Path(clip_path).exists():
@@ -1463,8 +1468,32 @@ def local_ai_sequence_source(db: Database, death: Dict[str, Any], start_before: 
             "start": max(0.0, 15.0 - start_before),
             "duration": duration,
             "vod_timestamp_start": None,
+            "marker_quality": local_ai_death_anchor_timestamp(death),
         }
     return None
+
+
+def local_ai_death_anchor_timestamp(death: Dict[str, Any]) -> Dict[str, Any]:
+    timestamp = float(death.get("timestamp") or 0.0)
+    notes = str(death.get("notes") or "").lower()
+    labels = " ".join(str(item).lower() for item in death.get("mistake_labels") or [])
+    combat_report_only = "combat_report_only" in notes or "combat report appeared" in notes or "combat-report" in notes or "combat report" in labels
+    if combat_report_only:
+        offset = 1.75
+        return {
+            "timestamp": max(0.0, timestamp - offset),
+            "original_timestamp": timestamp,
+            "anchor_offset_seconds": offset,
+            "source": "combat_report_only_adjusted",
+            "warning": "Combat-report-only marker may be post-death; Clip Coach shifted the review anchor earlier.",
+        }
+    return {
+        "timestamp": timestamp,
+        "original_timestamp": timestamp,
+        "anchor_offset_seconds": 0.0,
+        "source": "death_timestamp",
+        "warning": "",
+    }
 
 
 def extract_sequence_frames(ffmpeg: str, source: Path, frame_dir: Path, start: float, duration: float, fps: int, width: int = 576) -> List[Path]:

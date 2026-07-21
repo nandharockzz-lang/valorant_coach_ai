@@ -56,6 +56,9 @@ Current flow:
 - The app logs must show each stage: frame prep, context extraction POST, final review POST, response received.
 - Windows subprocess output must be decoded with `encoding="utf-8", errors="replace"` to avoid cp1252 crashes.
 - Every local model request must fit the configured context window, default `8192` tokens. The app should reserve output tokens, estimate image tokens, trim prompt context, and reduce frame count before sending requests to LM Studio/Ollama.
+- Frame trimming must preserve a representative clip timeline instead of keeping only the final frames, because combat report markers may be post-death and fast contact can happen before the last sampled frames.
+- "Insufficient visual evidence" is a field/segment-level result, not a default whole-review outcome. If enemy contact is not visible but crosshair, movement, HUD, minimap, or death-cue evidence exists, Clip Coach should still provide low-confidence actionable coaching.
+- Combat-report-only markers are treated as potentially late anchors; Clip Coach shifts the review anchor earlier and records marker-quality metadata for debugging.
 
 ### ADR-004: Knowledge Base Role
 

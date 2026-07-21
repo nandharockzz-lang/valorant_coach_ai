@@ -974,7 +974,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.20.8-local"
+APP_VERSION = "0.20.9-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -985,6 +985,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Fix Clip Coach regression by preserving representative frames under context budget, shifting combat-report-only anchors earlier, and falling back to deterministic visual coaching when the local model refuses.",
             "Prevent long-lived combat reports from creating repeated death suggestions by detecting combat-report onset only.",
             "Let Find Deaths create lower-confidence suggestions from visible combat report when killfeed/player-name OCR is blocked.",
             "Run Find Deaths as a background job with live progress, capped OCR frames, lower scan FPS, and per-crop Tesseract timeouts.",
@@ -1869,6 +1870,8 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
         "clip_path": death.get("clip_path"),
         "keyframes": keyframes,
         "segments": build_clip_segments(keyframes),
+        "sequence": sequence.get("analysis") or {},
+        "marker_quality": ((sequence.get("analysis") or {}).get("marker_quality") or {}),
         "visual_signals": visual_signals.get("analysis") or {},
         "ocr_regions": region_ocr.get("analysis") or {},
         "context_extraction": extraction.get("analysis") or {},
@@ -1905,6 +1908,7 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
         model_payload = {"summary": completed.stdout.strip()}
     result = build_model_review_result(model_payload, "local-command", completed.stdout or "")
     result = enrich_model_review_result(result, request)
+    result = apply_deterministic_review_fallback(result, request)
     db.save_death_analysis(death_id, "local_ai_review", result)
     update_coach_memory_from_review(db, death, result)
     return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
@@ -2700,17 +2704,28 @@ def budget_local_model_payload(
     usable = max(512, context_limit - output_reserve - safety_reserve)
     prompt = str(payload.get("prompt") or "")
     frames = list(payload.get("keyframes") or [])
-    max_prompt_tokens = min(3200, max(900, int(usable * 0.48)))
+    image_heavy = str(stage or "").lower() in {"clip_review", "enemy_contact", "crosshair_mechanics", "positioning_context"}
+    if image_heavy and frames:
+        # Dense clip review fails badly when a long KB/schema prompt leaves room
+        # for only the last few images. Keep the prompt compact and preserve a
+        # representative visual timeline.
+        max_prompt_tokens = min(1800, max(900, int(usable * 0.28)))
+    else:
+        max_prompt_tokens = min(3200, max(900, int(usable * 0.48)))
     prompt = compact_text_for_token_budget(prompt, max_prompt_tokens)
-    caption_tokens = estimate_text_tokens("\n".join(str(item.get("caption") or "") for item in frames))
-    fixed_tokens = estimate_text_tokens(system_prompt) + estimate_text_tokens(prompt) + caption_tokens
+    fixed_tokens = estimate_text_tokens(system_prompt) + estimate_text_tokens(prompt)
     remaining = usable - fixed_tokens
     if frames:
         max_frames = max(1, remaining // max(1, image_cost))
         budgeted_frames = select_frames_for_context_budget(frames, int(max_frames), stage)
+        caption_tokens = estimate_text_tokens("\n".join(str(item.get("caption") or "") for item in budgeted_frames))
+        while len(budgeted_frames) > 1 and fixed_tokens + caption_tokens + len(budgeted_frames) * image_cost > usable:
+            budgeted_frames = select_frames_for_context_budget(budgeted_frames, len(budgeted_frames) - 1, stage)
+            caption_tokens = estimate_text_tokens("\n".join(str(item.get("caption") or "") for item in budgeted_frames))
     else:
         max_frames = 0
         budgeted_frames = []
+        caption_tokens = 0
     budgeted = dict(payload)
     budgeted["prompt"] = prompt
     budgeted["keyframes"] = budgeted_frames
@@ -2724,11 +2739,25 @@ def budget_local_model_payload(
         "image_token_estimate": image_cost,
         "original_frames": len(frames),
         "sent_frames": len(budgeted_frames),
+        "dropped_frames": max(0, len(frames) - len(budgeted_frames)),
+        "first_sent_frame": frame_audit_ref(budgeted_frames[0]) if budgeted_frames else None,
+        "last_sent_frame": frame_audit_ref(budgeted_frames[-1]) if budgeted_frames else None,
+        "sent_frame_range": batch_frame_range(budgeted_frames) if budgeted_frames else "no frames",
         "estimated_total_tokens": estimate_text_tokens(system_prompt) + estimate_text_tokens(prompt) + estimate_text_tokens("\n".join(str(item.get("caption") or "") for item in budgeted_frames)) + len(budgeted_frames) * image_cost + output_reserve + safety_reserve,
         "stage": stage,
         "trimmed": len(budgeted_frames) < len(frames) or prompt != str(payload.get("prompt") or ""),
     }
     return budgeted, budget
+
+
+def frame_audit_ref(frame: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "index": frame.get("sequence_index") or frame.get("index"),
+        "relative_second": frame.get("relative_second"),
+        "seconds_before_death": frame.get("seconds_before_death"),
+        "timestamp": frame.get("timestamp"),
+        "role": frame.get("role"),
+    }
 
 
 def estimate_text_tokens(text: Any) -> int:
@@ -2760,8 +2789,10 @@ def select_frames_for_context_budget(frames: List[Dict[str, Any]], limit: int, s
     if limit == 1:
         return [frames[-1]]
     stage_text = str(stage or "").lower()
-    if any(token in stage_text for token in ("contact", "review", "coach", "death")):
-        return frames[-limit:]
+    if any(token in stage_text for token in ("clip_review", "enemy_contact", "crosshair", "positioning", "coach")):
+        return select_representative_clip_frames(frames, limit)
+    if any(token in stage_text for token in ("contact", "death")):
+        return select_representative_clip_frames(frames, limit)
     if limit <= 4:
         picks = [0, len(frames) // 2, len(frames) - 1]
         unique = []
@@ -2774,6 +2805,39 @@ def select_frames_for_context_budget(frames: List[Dict[str, Any]], limit: int, s
     if frames[-1] not in selected:
         selected.append(frames[-1])
     return selected[:limit]
+
+
+def select_representative_clip_frames(frames: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    if limit >= len(frames):
+        return frames
+    scored_indices = []
+    for index, frame in enumerate(frames):
+        rel = frame_relative_second(frame)
+        score = 0.0
+        if rel is not None:
+            distance = abs(float(rel))
+            score += max(0.0, 8.0 - distance)
+            if -2.5 <= float(rel) <= 0.35:
+                score += 5.0
+            if -5.0 <= float(rel) < -2.5:
+                score += 2.0
+        metrics = frame.get("metrics") or {}
+        score += float(metrics.get("death_score") or 0) * 4.0
+        score += float(metrics.get("pressure_score") or 0) * 3.0
+        score += float(metrics.get("crosshair_activity") or 0) * 2.0
+        scored_indices.append((score, index))
+    keep = {0, len(frames) - 1}
+    for _, index in sorted(scored_indices, reverse=True):
+        keep.add(index)
+        if len(keep) >= limit:
+            break
+    if len(keep) < limit:
+        step = max(1, len(frames) / float(limit))
+        for item in range(limit):
+            keep.add(min(len(frames) - 1, int(round(item * step))))
+            if len(keep) >= limit:
+                break
+    return [frames[index] for index in sorted(keep)[:limit]]
 
 
 def run_local_http_text(
@@ -3109,7 +3173,8 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
         "Treat the images as a short local video clip in chronological order. First analyze each named segment separately, then synthesize one coach read. Track crosshair movement, clearing path, movement while aiming, minimap/HUD changes, and fight setup over time. "
         "Enemies can appear for only one or two frames, so scan every frame for a visible opponent, damage cue, tracer, muzzle flash, or sudden contact. "
         "Every coaching claim must cite a segment and frame/timing evidence. Use only visible evidence from those frames. Do not assume enemy positions, player intent, comms, utility usage, or the outcome unless visible. "
-        "If the frames do not prove a claim, write 'insufficient visual evidence' and reduce confidence. "
+        "If enemy/contact is not visible, say that specifically but still coach visible crosshair, movement, angle exposure, HUD/minimap, and timing evidence. "
+        "Use 'insufficient visual evidence' only for a specific field or segment that cannot be read; do not make it the whole review unless every frame is blank, unrelated, or post-death only. "
         "Separate perception from coaching: perception must describe only what is visible, and coaching must explain the decision error and action."
     )
 
@@ -3291,7 +3356,8 @@ def death_round_label(death: Dict[str, Any]) -> str:
 
 def run_local_http_review(db: Database, death_id: int, payload: Dict[str, Any], status: Dict[str, Any]) -> Dict[str, Any]:
     keyframes = payload.get("keyframes") or []
-    if status.get("purpose") != "ocr" and str(status.get("review_mode") or "") in {"adaptive", "hybrid", "burst", "contact"}:
+    review_mode = str(status.get("review_mode") or "")
+    if status.get("purpose") != "ocr" and review_mode in {"adaptive", "hybrid"}:
         return run_local_http_review_multipass(db, death_id, payload, status)
     if len(keyframes) > 30:
         return run_local_http_review_batched(db, death_id, payload, status, chunk_size=30)
@@ -3339,9 +3405,9 @@ def run_local_http_review_multipass(db: Database, death_id: int, payload: Dict[s
             payload["prompt"]
             + "\n\n"
             + review_pass["instruction"]
-            + "\nThis is a specialized local vision pass. Cite frame numbers and visible evidence. If evidence is insufficient, say so."
+            + "\nThis is a specialized local vision pass. Cite frame numbers and visible evidence. If enemy/contact is not visible, say that specifically and still report any readable crosshair, movement, HUD, minimap, or post-death evidence."
         )
-        response = run_local_http_review_single(db, death_id, pass_payload, status, save=False)
+        response = run_local_http_review_single(db, death_id, pass_payload, status, save=False, stage=review_pass["id"])
         if not response.get("ok"):
             return response
         review = response.get("analysis") or {}
@@ -3353,6 +3419,7 @@ def run_local_http_review_multipass(db: Database, death_id: int, payload: Dict[s
     combined["multi_pass_reviews"] = pass_reviews
     combined["multi_pass"] = {"enabled": True, "pass_count": len(pass_reviews), "passes": [{"id": item["pass_id"], "label": item["pass_label"], "frame_range": item.get("frame_range")} for item in pass_reviews]}
     combined = enrich_model_review_result(combined, payload)
+    combined = apply_deterministic_review_fallback(combined, payload)
     db.save_death_analysis(death_id, "local_ai_review", combined)
     death = payload.get("death") or db.get_death(death_id) or {}
     update_coach_memory_from_review(db, death, combined)
@@ -3396,6 +3463,7 @@ def synthesize_multipass_reviews(
         payload["prompt"]
         + "\n\nSynthesize these specialized local VLM passes into one final personal VALORANT coach review. "
         "Resolve conflicts by trusting visible evidence and lowering confidence. Enemy/contact pass controls enemy visibility claims; crosshair pass controls aim claims; positioning pass controls utility/minimap/HUD claims. "
+        "Do not collapse the whole answer to insufficient evidence if any pass found visible crosshair, movement, HUD, minimap, contact, damage, or death-cue evidence. "
         "Return strict JSON with one diagnosis, visible evidence timeline, coaching labels, better_play, drill, and claim_confidence.\n\n"
         + json.dumps(compact, indent=2)
     )
@@ -3436,9 +3504,10 @@ def synthesize_multipass_reviews(
     return result
 
 
-def run_local_http_review_single(db: Database, death_id: int, payload: Dict[str, Any], status: Dict[str, Any], save: bool = True) -> Dict[str, Any]:
+def run_local_http_review_single(db: Database, death_id: int, payload: Dict[str, Any], status: Dict[str, Any], save: bool = True, stage: str = "clip_review") -> Dict[str, Any]:
     provider = status["provider"]
-    payload, budget = budget_local_model_payload(payload, status, local_model_system_prompt(status), 900, "clip_review")
+    payload, budget = budget_local_model_payload(payload, status, local_model_system_prompt(status), 900, stage)
+    payload["request_budget"] = budget
     images = [item["image_base64"] for item in payload.get("keyframes") or [] if item.get("image_base64")]
     prompt = payload["prompt"]
     if provider == "ollama":
@@ -3465,6 +3534,7 @@ def run_local_http_review_single(db: Database, death_id: int, payload: Dict[str,
             "max_tokens": 900,
         }
     try:
+        db.save_death_analysis(death_id, "local_model_request_budget", {"kind": "local_model_request_budget", "provider": provider, "model": status.get("model"), "save_final_review": save, **budget})
         db.log(
             "info",
             "local-ai",
@@ -3480,6 +3550,7 @@ def run_local_http_review_single(db: Database, death_id: int, payload: Dict[str,
     result = parse_model_review(text, provider)
     result = enrich_model_review_result(result, payload)
     if save:
+        result = apply_deterministic_review_fallback(result, payload)
         db.save_death_analysis(death_id, "local_ai_review", result)
         death = payload.get("death") or db.get_death(death_id) or {}
         update_coach_memory_from_review(db, death, result)
@@ -3511,6 +3582,7 @@ def run_local_http_review_batched(
     combined["batch_reviews"] = chunk_reviews
     combined["batches"] = len(chunk_reviews)
     combined = enrich_model_review_result(combined, payload)
+    combined = apply_deterministic_review_fallback(combined, payload)
     db.save_death_analysis(death_id, "local_ai_review", combined)
     death = payload.get("death") or db.get_death(death_id) or {}
     update_coach_memory_from_review(db, death, combined)
@@ -3939,9 +4011,154 @@ def enrich_model_review_result(result: Dict[str, Any], payload: Dict[str, Any]) 
     return result
 
 
+def apply_deterministic_review_fallback(result: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not review_needs_deterministic_fallback(result):
+        return result
+    fallback = deterministic_review_fallback(payload)
+    if not fallback:
+        return result
+    merged = dict(result)
+    merged["summary"] = fallback["summary"]
+    merged["visible_evidence"] = fallback["visible_evidence"]
+    merged["labels"] = fallback["labels"]
+    merged["better_play"] = fallback["better_play"]
+    merged["drill"] = fallback["drill"]
+    merged["confidence"] = fallback["confidence"]
+    merged["perception"] = fallback["perception"]
+    merged["coaching"] = fallback["coaching"]
+    merged["first_mistake"] = fallback["coaching"]["first_mistake"]
+    merged["crosshair_issue"] = fallback["coaching"]["crosshair_issue"]
+    merged["positioning_issue"] = fallback["coaching"]["positioning_issue"]
+    merged["mechanical_issue"] = fallback["coaching"]["mechanical_issue"]
+    merged["fallback_reason"] = "Local VLM returned insufficient evidence; deterministic visual signals produced a low-confidence coach read."
+    merged["model_original_summary"] = result.get("summary") or ""
+    merged["evidence_timeline"] = build_review_evidence_timeline(merged, payload.get("keyframes") or [])
+    merged["segment_reviews"] = merge_segment_reviews(payload.get("segments") or [], merged.get("segment_reviews") or [], merged)
+    merged["claim_confidence"] = build_claim_confidence(merged)
+    merged["review_quality"] = score_review_quality(merged)
+    merged["review_pipeline"] = build_review_pipeline_audit(payload, merged)
+    return merged
+
+
+def review_needs_deterministic_fallback(result: Dict[str, Any]) -> bool:
+    summary = str(result.get("summary") or "").lower()
+    better_play = str(result.get("better_play") or "").strip()
+    evidence = result.get("visible_evidence") or []
+    timeline = result.get("evidence_timeline") or []
+    confidence = normalize_confidence(result.get("confidence", 0.0))
+    insufficient = "insufficient visual evidence" in summary or "not enough visual evidence" in summary
+    empty_action = not better_play or "insufficient visual evidence" in better_play.lower()
+    weak_evidence = len(evidence) + len(timeline) <= 1
+    return insufficient and empty_action and (weak_evidence or confidence < 0.45)
+
+
+def deterministic_review_fallback(payload: Dict[str, Any]) -> Dict[str, Any]:
+    visual = payload.get("visual_signals") or {}
+    if not visual or visual.get("status") == "empty":
+        return {}
+    crosshair = visual.get("crosshair_score") or {}
+    movement = visual.get("movement_read") or {}
+    minimap = visual.get("minimap_read") or {}
+    first_contact = visual.get("first_contact") or {}
+    death_cue = visual.get("death_cue") or {}
+    enemy_timeline = visual.get("enemy_visibility_timeline") or []
+    evidence = []
+    if first_contact:
+        evidence.append(f"Frame {first_contact.get('frame')} shows the strongest contact proxy near {format_relative_second(first_contact.get('relative_second'))}.")
+    if death_cue:
+        evidence.append(f"Frame {death_cue.get('frame')} has the strongest death/combat-report cue.")
+    if crosshair.get("summary"):
+        evidence.append(crosshair["summary"])
+    if movement.get("summary"):
+        evidence.append(movement["summary"])
+    if minimap.get("summary"):
+        evidence.append(minimap["summary"])
+    if not evidence:
+        return {}
+    labels = deterministic_fallback_labels(crosshair, movement, first_contact, enemy_timeline)
+    first_mistake = labels[0] if labels else "review fight setup and crosshair readiness"
+    better_play = deterministic_better_play(labels, first_contact)
+    drill = deterministic_drill(labels)
+    summary = f"Low-confidence local read: {first_mistake}; verify against the clip because the VLM did not produce enough visual evidence."
+    confidence = min(0.52, max(0.34, float(visual.get("confidence") or 0.0) * 0.65))
+    return {
+        "summary": summary,
+        "visible_evidence": evidence[:8],
+        "labels": labels[:4] or ["needs manual review"],
+        "better_play": better_play,
+        "drill": drill,
+        "confidence": round(confidence, 2),
+        "perception": {
+            "enemy_seen": "uncertain" if not enemy_timeline else "possible",
+            "enemy_frames": [str(row.get("frame")) for row in enemy_timeline[:6] if row.get("frame")],
+            "first_contact_time": format_relative_second(first_contact.get("relative_second")) if first_contact else "unknown",
+            "time_to_death": "unknown",
+            "crosshair_level": str(crosshair.get("level") or "unknown"),
+            "crosshair_alignment": str(crosshair.get("risk") or "unknown"),
+            "peek_type": "unknown",
+            "movement_state": str(movement.get("risk") or "unknown"),
+            "utility_seen": "unknown",
+            "weapon_seen": "unknown",
+            "hp_seen": "unknown",
+            "score_seen": "unknown",
+            "teammates_alive_seen": "unknown",
+            "spike_state_seen": "unknown",
+            "evidence": evidence[:8],
+            "confidence": round(confidence, 2),
+        },
+        "coaching": {
+            "summary": summary,
+            "why_death_happened": summary,
+            "first_mistake": first_mistake,
+            "better_decision": better_play,
+            "utility_issue": "uncertain; local fallback did not verify utility usage",
+            "crosshair_issue": str(crosshair.get("summary") or "uncertain"),
+            "positioning_issue": "uncertain; verify angle exposure manually" if first_contact else "uncertain",
+            "mechanical_issue": str(movement.get("summary") or "uncertain"),
+            "drill": drill,
+            "labels": labels[:4] or ["needs manual review"],
+            "confidence": round(confidence, 2),
+        },
+    }
+
+
+def deterministic_fallback_labels(crosshair: Dict[str, Any], movement: Dict[str, Any], first_contact: Dict[str, Any], enemy_timeline: List[Dict[str, Any]]) -> List[str]:
+    labels = []
+    crosshair_text = (str(crosshair.get("risk") or "") + " " + str(crosshair.get("summary") or "")).lower()
+    movement_text = str(movement.get("risk") or "").lower()
+    if any(token in crosshair_text for token in ("wide", "low", "late", "unstable", "poor")):
+        labels.append("crosshair readiness")
+    if "moving during contact" in movement_text or "high movement" in movement_text:
+        labels.append("movement during fight")
+    if first_contact or enemy_timeline:
+        labels.append("first contact review")
+    if not labels:
+        labels.append("needs manual review")
+    return labels
+
+
+def deterministic_better_play(labels: List[str], first_contact: Dict[str, Any]) -> str:
+    if "crosshair readiness" in labels:
+        return "Before committing to the angle, place the crosshair at likely head height and clear one slice at a time before exposing your body."
+    if "movement during fight" in labels:
+        return "Stabilize before the first accurate burst; avoid carrying movement into the contact frame unless you are intentionally jiggling for info."
+    if first_contact:
+        return "Pause the clip at the first contact cue and check whether the swing exposed more than one angle or lacked a trade/escape plan."
+    return "Use the clip timeline to manually verify the first visible mistake, then label the marker so future reviews can learn from it."
+
+
+def deterministic_drill(labels: List[str]) -> str:
+    if "crosshair readiness" in labels:
+        return "Deathmatch block: clear every angle with the crosshair already at head height before you move past the corner."
+    if "movement during fight" in labels:
+        return "Range/deathmatch block: strafe, stop, fire a 2-3 bullet burst, then reset before the next peek."
+    return "Review 5 deaths and pause 2 seconds before death to call the first fix before watching the outcome."
+
+
 def build_review_pipeline_audit(payload: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
     context = payload.get("context_extraction") or {}
     segments = payload.get("segments") or []
+    request_budget = payload.get("request_budget") or {}
     return {
         "kind": "valorant_specific_review_pipeline",
         "privacy": payload.get("privacy") or "local-only",
@@ -3955,6 +4172,8 @@ def build_review_pipeline_audit(payload: Dict[str, Any], result: Dict[str, Any])
             {"id": "memory", "label": "Apply personal coach memory", "status": "complete"},
             {"id": "synthesis", "label": "Generate final coach read", "status": result.get("status") or "complete"},
         ],
+        "request_budget": request_budget,
+        "fallback": result.get("fallback_reason") or "",
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -4330,7 +4549,8 @@ def local_model_system_prompt(status: Dict[str, Any]) -> str:
         "Return strict compact JSON with separate perception and coaching objects. "
         "Analyze how the player clears, moves, aims, checks HUD/minimap, and enters the fight across time. Enemies may be visible for only one or two frames, so inspect the whole sequence frame-by-frame. "
         "Use only visible frame evidence. Do not invent hidden enemies, comms, unseen utility, prior context, or player intent. "
-        "If the sequence is visually insufficient, say 'insufficient visual evidence' and set confidence below 0.45."
+        "If enemy/contact is not visible, say enemy_contact is uncertain and still provide low-confidence coaching from visible crosshair, movement, HUD/minimap, and exposure evidence. "
+        "Only make the entire review 'insufficient visual evidence' when the sequence itself is blank, unrelated, unreadable, or only post-death UI."
     )
 
 
@@ -4348,14 +4568,17 @@ def strip_json_fence(text: str) -> str:
 
 
 def redact_model_request(payload: Dict[str, Any], status: Dict[str, Any]) -> Dict[str, Any]:
+    keyframes = payload.get("keyframes") or []
     return {
         "kind": "local_model_audit",
         "provider": status.get("provider"),
         "model": status.get("model"),
         "base_url": status.get("base_url"),
         "sent_clip_path": bool(payload.get("clip_path")),
-        "sent_keyframes": len(payload.get("keyframes") or []),
-        "sent_image_bytes": sum(len(item.get("image_base64") or "") for item in payload.get("keyframes") or []),
+        "prepared_keyframes": len(keyframes),
+        "prepared_frame_range": batch_frame_range(keyframes) if keyframes else "no frames",
+        "marker_quality": payload.get("marker_quality") or {},
+        "sent_image_bytes": sum(len(item.get("image_base64") or "") for item in keyframes),
         "prompt_preview": str(payload.get("prompt") or "")[:600],
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -4775,7 +4998,7 @@ def infer_best_improvement(trends: Dict[str, Any]) -> str:
 def model_audit(db: Database) -> Dict[str, Any]:
     audits = [
         item for item in db.list_structured_analyses("death", limit=500)
-        if item.get("analysis_type") in {"local_model_audit", "local_ai_review"}
+        if item.get("analysis_type") in {"local_model_audit", "local_model_request_budget", "local_ai_review"}
     ]
     return {
         "local_ai": local_ai_status(db),
