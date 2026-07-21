@@ -952,7 +952,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.20.2-local"
+APP_VERSION = "0.20.3-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -963,6 +963,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Save successful Local AI tests for Clip Coach and log each frame-prep/model-request stage.",
             "Harden Clip Coach against null local-model response fields and log full server tracebacks for failed API calls.",
             "Show whether the player-name killfeed/combat-report death detector ran, including OCR availability and fallback counts.",
             "Make player-name killfeed OCR plus combat-report confirmation the primary death suggestion detector, with configurable in-game name and evidence crops.",
@@ -1759,6 +1760,17 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
     death = db.get_death(death_id)
     if not death:
         return {"ok": False, "message": "death not found", "status": status}
+    db.log(
+        "info",
+        "local-ai",
+        f"Clip Coach started for death #{death_id}",
+        {
+            "provider": status.get("provider"),
+            "model": status.get("model"),
+            "enabled": status.get("enabled"),
+            "review_mode": status.get("review_mode"),
+        },
+    )
     if not status["enabled"]:
         result = {
             "kind": "local_ai_review",
@@ -1769,8 +1781,10 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
             "status": "disabled",
         }
         db.save_death_analysis(death_id, "local_ai_review", result)
+        db.log("warning", "local-ai", f"Clip Coach stopped before model request for death #{death_id}: local AI disabled.", {"status": status})
         return {"ok": True, "message": result["summary"], "analysis": result, "status": status}
     sequence_profile = local_ai_sequence_profile(str(status.get("review_mode") or "contact"), status.get("review_fps"), status.get("review_window_seconds"))
+    db.log("info", "local-ai", f"Clip Coach preparing frame sequence for death #{death_id}.", {"mode": sequence_profile["id"], "limit": sequence_profile["limit"]})
     sequence = build_local_ai_review_sequence(
         db,
         death_id,
@@ -1780,10 +1794,13 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
         window_seconds=status.get("review_window_seconds"),
     )
     if not sequence.get("ok"):
+        db.log("warning", "local-ai", f"Clip Coach stopped before model request for death #{death_id}: {sequence.get('message')}", {"sequence": sequence})
         return {"ok": False, "message": sequence.get("message") or "Could not prepare local AI review sequence.", "status": status}
     keyframes = keyframe_payload(db, death_id, analysis_type="local_ai_sequence", limit=int(sequence_profile["limit"]))
+    db.log("info", "local-ai", f"Clip Coach prepared {len(keyframes)} frame(s) for death #{death_id}.", {"sequence_message": sequence.get("message")})
     visual_signals = analyze_clip_visual_signals(db, death_id, keyframes)
     region_ocr = analyze_clip_ocr_regions(db, death_id, keyframes)
+    db.log("info", "local-ai", f"Clip Coach running context extraction for death #{death_id}.", {"frame_count": len(keyframes)})
     extraction = run_local_context_extraction(db, death_id, death, keyframes, status)
     if extraction.get("ok"):
         death = db.get_death(death_id) or death
@@ -1801,6 +1818,12 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
     }
     db.save_death_analysis(death_id, "local_model_audit", redact_model_request(request, status))
     if status["provider"] != "custom-command":
+        db.log(
+            "info",
+            "local-ai",
+            f"Clip Coach sending review request to {status['provider']} for death #{death_id}.",
+            {"frame_count": len(keyframes), "provider": status.get("provider"), "model": status.get("model"), "base_url": status.get("base_url")},
+        )
         return run_local_http_review(db, death_id, request, status)
     try:
         completed = subprocess.run(
@@ -1847,17 +1870,32 @@ def run_local_context_extraction(
     }
     try:
         if len(keyframes) > 30:
+            db.log(
+                "info",
+                "local-ai",
+                f"Clip Coach chunked context extraction started for death #{death_id}.",
+                {"provider": status.get("provider"), "model": status.get("model"), "frame_count": len(keyframes)},
+            )
             parsed = run_chunked_context_extraction(request, status)
+            db.log("info", "local-ai", f"Clip Coach chunked context extraction completed for death #{death_id}.", {"chunk_count": parsed.get("chunk_count")})
             provider = parsed.get("provider") or status["provider"]
         elif status["provider"] == "custom-command":
             text = run_custom_model_text(status, request, timeout=90)
             provider = "local-command"
             parsed = parse_context_extraction(text, provider)
         else:
+            db.log(
+                "info",
+                "local-ai",
+                f"Clip Coach context extraction POST to {status['provider']} for death #{death_id}.",
+                {"provider": status.get("provider"), "model": status.get("model"), "frame_count": len(keyframes), "base_url": status.get("base_url")},
+            )
             text = run_local_http_text(request, status, local_context_system_prompt(), max_tokens=900, timeout=180)
+            db.log("info", "local-ai", f"Clip Coach context extraction response received for death #{death_id}.", {"response_chars": len(text)})
             provider = status["provider"]
             parsed = parse_context_extraction(text, provider)
     except Exception as exc:
+        db.log("warning", "local-ai", f"Clip Coach context extraction failed for death #{death_id}: {exc}", {"provider": status.get("provider")})
         result = context_extraction_fallback(f"Context extraction failed: {exc}")
         db.save_death_analysis(death_id, "context_extraction", result)
         return {"ok": False, "message": result["summary"], "analysis": result, "status": status}
@@ -3223,10 +3261,18 @@ def synthesize_multipass_reviews(
                 "temperature": 0.05,
                 "max_tokens": 900,
             }
+        db.log(
+            "info",
+            "local-ai",
+            f"Clip Coach synthesis POST to {provider}.",
+            {"endpoint": endpoint, "model": status.get("model"), "pass_count": len(pass_reviews), "image_count": 0},
+        )
         response = post_json(endpoint, body, timeout=180)
         text = extract_model_response_text(response)
+        db.log("info", "local-ai", f"Clip Coach synthesis response received from {provider}.", {"response_chars": len(text)})
         result = parse_model_review(text, provider)
-    except Exception:
+    except Exception as exc:
+        db.log("warning", "local-ai", f"Clip Coach synthesis failed before/while contacting {provider}: {exc}", {"provider": provider})
         result = fallback_batched_review(provider, pass_reviews)
     result["kind"] = "local_ai_review"
     result["status"] = "completed"
@@ -3262,10 +3308,18 @@ def run_local_http_review_single(db: Database, death_id: int, payload: Dict[str,
             "max_tokens": 900,
         }
     try:
+        db.log(
+            "info",
+            "local-ai",
+            f"Clip Coach POST to {provider}.",
+            {"endpoint": endpoint, "model": status.get("model"), "frame_count": len(payload.get("keyframes") or []), "image_count": len(images)},
+        )
         response = post_json(endpoint, body, timeout=240)
     except Exception as exc:
+        db.log("error", "local-ai", f"Clip Coach {provider} request failed: {exc}", {"endpoint": endpoint, "model": status.get("model")})
         return {"ok": False, "message": f"{provider} request failed: {exc}", "status": status}
     text = extract_model_response_text(response)
+    db.log("info", "local-ai", f"Clip Coach response received from {provider}.", {"response_chars": len(text)})
     result = parse_model_review(text, provider)
     result = enrich_model_review_result(result, payload)
     if save:
@@ -3351,10 +3405,18 @@ def synthesize_batched_reviews(
             "max_tokens": 900,
         }
     try:
+        db.log(
+            "info",
+            "local-ai",
+            f"Clip Coach batch synthesis POST to {provider}.",
+            {"endpoint": endpoint, "model": status.get("model"), "batch_count": len(chunk_reviews), "image_count": 0},
+        )
         response = post_json(endpoint, body, timeout=180)
         text = extract_model_response_text(response)
+        db.log("info", "local-ai", f"Clip Coach batch synthesis response received from {provider}.", {"response_chars": len(text)})
         result = parse_model_review(text, provider)
-    except Exception:
+    except Exception as exc:
+        db.log("warning", "local-ai", f"Clip Coach batch synthesis failed before/while contacting {provider}: {exc}", {"provider": provider})
         result = fallback_batched_review(provider, chunk_reviews)
     result["kind"] = "local_ai_review"
     result["status"] = "completed"

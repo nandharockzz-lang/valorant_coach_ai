@@ -726,9 +726,16 @@ async function testLocalAiConfig() {
     `;
   }
   if (result.ok && !payload.model && models.length) {
-    document.querySelector("#localAiModel").value = models[0];
+    payload.model = models[0];
+    document.querySelector("#localAiModel").value = payload.model;
   }
-  setStatus(result.message || "Local AI test complete.");
+  if (result.ok) {
+    await api("/api/local-ai/config", { method: "POST", body: JSON.stringify(payload) });
+    setStatus(`${result.message || "Local AI test complete."} Settings saved for Clip Coach.`);
+    await loadAutomation();
+  } else {
+    setStatus(result.message || "Local AI test failed.", { state: "error" });
+  }
 }
 
 async function rebuildKnowledgeBase() {
