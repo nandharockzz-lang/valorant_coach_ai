@@ -974,7 +974,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.20.7-local"
+APP_VERSION = "0.20.8-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -985,6 +985,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Prevent long-lived combat reports from creating repeated death suggestions by detecting combat-report onset only.",
             "Let Find Deaths create lower-confidence suggestions from visible combat report when killfeed/player-name OCR is blocked.",
             "Run Find Deaths as a background job with live progress, capped OCR frames, lower scan FPS, and per-crop Tesseract timeouts.",
             "Cap Clip Coach local-model requests to the configured context window by trimming prompt context and frame count before POST.",

@@ -479,9 +479,10 @@ def detect_player_deaths_from_hud(
         )
     else:
         ocr_items = []
-        progress(update, "Find Deaths: Tesseract missing; using visual fallback only.", progress_start)
+        progress(update, "Find Deaths: Tesseract missing; using visual combat-report onset and fallback.", progress_start)
     total = max(1, len(ocr_items))
     last_progress = -1
+    combat_ocr_samples: List[Dict[str, Any]] = []
     for index, item in enumerate(ocr_items):
         arr = load_frame(item.path)
         killfeed_crop = crop_region(arr, calibration.get("killfeed") or default_calibration()["killfeed"])
@@ -501,6 +502,18 @@ def detect_player_deaths_from_hud(
         combat_text_score = combat_report_text_score(combat_text)
         combat_score = max(float(item.combat_report_score or 0), combat_text_score)
         killfeed_visual = max(float(item.killfeed_red or 0), red_or_blue_score(killfeed_crop))
+        combat_ocr_samples.append(
+            {
+                "timestamp": item.timestamp,
+                "combat_score": combat_score,
+                "combat_text_score": combat_text_score,
+                "killfeed_activity": killfeed_visual,
+                "killfeed_text": killfeed_text[:220],
+                "combat_report_text": combat_text[:220],
+                "killfeed_crop": str(killfeed_path) if killfeed_path else "",
+                "combat_report_crop": str(combat_path) if combat_path else "",
+            }
+        )
         if name_score >= 0.72 and combat_score >= 0.34:
             confidence = min(0.98, 0.55 + name_score * 0.25 + combat_score * 0.18 + min(killfeed_visual, 0.25))
             raw_hits.append(
@@ -526,36 +539,12 @@ def detect_player_deaths_from_hud(
                     },
                 }
             )
-        elif combat_report_confirms_death(combat_score, combat_text_score, item):
-            confidence = min(0.84, 0.47 + combat_score * 0.22 + combat_text_score * 0.18)
-            raw_hits.append(
-                {
-                    "timestamp": item.timestamp,
-                    "confidence": round(confidence, 2),
-                    "reason": (
-                        "Primary detector: combat report appeared but killfeed/player-name confirmation was unavailable. "
-                        f"Combat score {combat_score:.2f}; OCR text: {short_evidence(combat_text)}"
-                    ),
-                    "frame_path": str(item.path.resolve()),
-                    "metrics": {
-                        "detector": "combat_report_only",
-                        "player_name": player_name,
-                        "name_match_score": round(name_score, 3),
-                        "combat_report_score": round(combat_score, 3),
-                        "combat_report_text_score": round(combat_text_score, 3),
-                        "killfeed_activity": round(killfeed_visual, 3),
-                        "killfeed_text": killfeed_text[:220],
-                        "combat_report_text": combat_text[:220],
-                        "killfeed_crop": str(killfeed_path) if killfeed_path else "",
-                        "combat_report_crop": str(combat_path) if combat_path else "",
-                    },
-                }
-            )
         if update and progress_end > progress_start:
             percent = progress_start + int(((index + 1) / total) * (progress_end - progress_start))
             if percent != last_progress and (index == 0 or index + 1 == total or (index + 1) % 10 == 0):
                 last_progress = percent
                 progress(update, f"Find Deaths: OCR HUD pass ({index + 1}/{total}).", percent)
+    raw_hits.extend(combat_report_onset_hits(timeline, combat_ocr_samples, player_name))
     return cluster_player_death_hits(raw_hits)
 
 
@@ -569,6 +558,92 @@ def combat_report_confirms_death(combat_score: float, text_score: float, item: F
     if visual >= 0.66:
         return True
     return False
+
+
+def combat_report_onset_hits(
+    timeline: List[FrameMetrics],
+    ocr_samples: List[Dict[str, Any]],
+    player_name: str,
+    absent_seconds: float = 6.0,
+    cooldown_seconds: float = 20.0,
+) -> List[Dict[str, Any]]:
+    if not timeline:
+        return []
+    samples = sorted(ocr_samples, key=lambda row: float(row.get("timestamp") or 0.0))
+    hits: List[Dict[str, Any]] = []
+    panel_active = False
+    low_since: Optional[float] = None
+    last_emit = -9999.0
+    for item in sorted(timeline, key=lambda row: row.timestamp):
+        sample = nearest_ocr_sample(samples, item.timestamp)
+        text_score = float((sample or {}).get("combat_text_score") or 0.0)
+        combat_score = max(float(item.combat_report_score or 0.0), text_score)
+        present = combat_report_confirms_death(combat_score, text_score, item)
+        absent = combat_report_is_absent(item, text_score)
+        timestamp = float(item.timestamp)
+        if present and not panel_active:
+            if timestamp - last_emit >= cooldown_seconds:
+                hits.append(combat_report_onset_candidate(item, sample, player_name, combat_score, text_score))
+                last_emit = timestamp
+            panel_active = True
+            low_since = None
+            continue
+        if panel_active:
+            if absent:
+                if low_since is None:
+                    low_since = timestamp
+                elif timestamp - low_since >= absent_seconds:
+                    panel_active = False
+                    low_since = None
+            else:
+                low_since = None
+    return hits
+
+
+def combat_report_is_absent(item: FrameMetrics, text_score: float) -> bool:
+    return float(item.combat_report_score or 0.0) <= 0.24 and float(item.death_score or 0.0) <= 0.35 and text_score < 0.25
+
+
+def nearest_ocr_sample(samples: List[Dict[str, Any]], timestamp: float, window_seconds: float = 4.0) -> Optional[Dict[str, Any]]:
+    if not samples:
+        return None
+    best = min(samples, key=lambda row: abs(float(row.get("timestamp") or 0.0) - float(timestamp)))
+    if abs(float(best.get("timestamp") or 0.0) - float(timestamp)) <= window_seconds:
+        return best
+    return None
+
+
+def combat_report_onset_candidate(
+    item: FrameMetrics,
+    sample: Optional[Dict[str, Any]],
+    player_name: str,
+    combat_score: float,
+    text_score: float,
+) -> Dict[str, Any]:
+    sample = sample or {}
+    confidence = min(0.84, 0.47 + combat_score * 0.22 + text_score * 0.18)
+    text = str(sample.get("combat_report_text") or "")
+    return {
+        "timestamp": item.timestamp,
+        "confidence": round(confidence, 2),
+        "reason": (
+            "Primary detector: combat report appeared but killfeed/player-name confirmation was unavailable. "
+            f"Combat score {combat_score:.2f}; OCR text: {short_evidence(text)}"
+        ),
+        "frame_path": str(item.path.resolve()),
+        "metrics": {
+            "detector": "combat_report_only",
+            "player_name": player_name,
+            "name_match_score": 0.0,
+            "combat_report_score": round(combat_score, 3),
+            "combat_report_text_score": round(text_score, 3),
+            "killfeed_activity": round(float(sample.get("killfeed_activity") or 0.0), 3),
+            "killfeed_text": str(sample.get("killfeed_text") or "")[:220],
+            "combat_report_text": text[:220],
+            "killfeed_crop": str(sample.get("killfeed_crop") or ""),
+            "combat_report_crop": str(sample.get("combat_report_crop") or ""),
+        },
+    }
 
 
 def select_ocr_death_frames(timeline: List[FrameMetrics], max_ocr_frames: int = 180) -> List[FrameMetrics]:
@@ -639,7 +714,7 @@ def death_detector_summary(suggestions: List[Dict[str, Any]], player_name: str, 
         elif reason.startswith("Fallback detector:"):
             fallback += 1
     warning = ""
-    if not ocr_available:
+    if not ocr_available and combat_only == 0:
         warning = "Player-name killfeed detection is unavailable because Tesseract OCR is not installed; only the fallback visual detector ran."
     elif primary == 0 and combat_only == 0:
         warning = f"Player-name killfeed OCR ran for '{player_name}' but found no confirmed killfeed, combat-report-only, or fallback deaths."
