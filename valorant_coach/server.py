@@ -77,7 +77,16 @@ from .automation import (
 from .clipper import extract_death_clips, ffmpeg_path
 from .coach import build_coach_dashboard, build_guided_match_coach, build_match_review
 from .db import Database
-from .detector import detector_status, export_detector_dataset, save_detector_annotation, train_detector
+from .detector import (
+    build_detector_candidates,
+    detector_status,
+    evaluate_detector_dataset,
+    export_detector_dataset,
+    list_detector_candidates,
+    prelabel_detector_candidates,
+    save_detector_annotation,
+    train_detector,
+)
 from .deep_analysis import (
     ai_review_status,
     analyze_gameplay,
@@ -89,6 +98,7 @@ from .deep_analysis import (
 )
 from .knowledge import knowledge_status, prompt_preview, rebuild_knowledge_base, search_knowledge
 from .reports import build_report, save_death_context_correction, write_markdown_report
+from .signals import signal_registry
 from .vision import (
     analyze_match_events,
     build_keyframe_gallery,
@@ -180,6 +190,11 @@ class CoachHandler(BaseHTTPRequestHandler):
             self.json_response(detector_tuning(DB))
         elif parsed.path == "/api/detector/status":
             self.json_response(detector_status(DB, DATA_DIR))
+        elif parsed.path == "/api/detector/candidates":
+            query = parse_qs(parsed.query)
+            match_id = parse_optional_int((query.get("match_id") or [""])[0])
+            limit = parse_optional_int((query.get("limit") or ["120"])[0]) or 120
+            self.json_response(list_detector_candidates(DB, match_id, limit))
         elif parsed.path == "/api/capabilities":
             ffmpeg = ffmpeg_path()
             tesseract = tesseract_path()
@@ -202,6 +217,8 @@ class CoachHandler(BaseHTTPRequestHandler):
             self.json_response({"logs": DB.list_logs()})
         elif parsed.path == "/api/schema":
             self.json_response(DB.schema_info())
+        elif parsed.path == "/api/signals":
+            self.json_response(signal_registry())
         elif parsed.path == "/api/watcher":
             self.json_response({"watcher": WATCHER.status(), "settings": self.settings_payload()})
         elif parsed.path == "/api/storage":
@@ -316,6 +333,12 @@ class CoachHandler(BaseHTTPRequestHandler):
                     lambda update, options=payload: detector_training_job(options, update),
                 )
                 self.json_response({"ok": True, "job_id": job_id})
+            elif parsed.path == "/api/detector/candidates":
+                self.json_response(build_detector_candidates(DB, DATA_DIR, self.read_json()))
+            elif parsed.path == "/api/detector/prelabel":
+                self.json_response(prelabel_detector_candidates(DB, DATA_DIR, self.read_json()))
+            elif parsed.path == "/api/detector/evaluate":
+                self.json_response(evaluate_detector_dataset(DB, DATA_DIR, self.read_json()))
             elif parsed.path == "/api/privacy/export":
                 self.json_response(privacy_export(PATHS, DB))
             elif parsed.path == "/api/privacy/wipe":
@@ -665,12 +688,12 @@ class CoachHandler(BaseHTTPRequestHandler):
 
     def handle_vision_frame_get(self, path: str) -> None:
         frame_id = path.strip("/").split("/")[-1]
-        matches = list(VISION_DIR.glob(f"**/{frame_id}.jpg"))
+        matches = list(VISION_DIR.glob(f"**/{frame_id}.jpg")) + list(DEEP_DIR.glob(f"**/{frame_id}.jpg"))
         if not matches:
             self.not_found()
             return
         frame_path = matches[0].resolve()
-        if not str(frame_path).startswith(str(VISION_DIR.resolve())):
+        if not (str(frame_path).startswith(str(VISION_DIR.resolve())) or str(frame_path).startswith(str(DEEP_DIR.resolve()))):
             self.not_found()
             return
         self.stream_file(frame_path)

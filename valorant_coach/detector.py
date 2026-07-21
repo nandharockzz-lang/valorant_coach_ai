@@ -24,6 +24,7 @@ def detector_status(db: Database, data_dir: Path) -> Dict[str, Any]:
     command = str(db.get_setting("enemy_detector_command", "") or "").strip()
     dataset_dir = data_dir / DATASET_DIR_NAME
     annotations = detector_annotation_summary(db)
+    candidates = detector_candidate_summary(db)
     ultralytics = module_available("ultralytics")
     configured = bool(command or model_path)
     suggested_command = ""
@@ -40,6 +41,7 @@ def detector_status(db: Database, data_dir: Path) -> Dict[str, Any]:
         "dataset_dir": str(dataset_dir),
         "dataset_exists": dataset_dir.exists(),
         "annotations": annotations,
+        "candidates": candidates,
         "classes": DETECTOR_CLASSES,
         "negative_class": NEGATIVE_CLASS,
         "summary": detector_status_summary(configured, model_path, ultralytics, annotations),
@@ -80,6 +82,157 @@ def save_detector_annotation(db: Database, death_id: int, payload: Dict[str, Any
     return {"ok": True, "id": analysis_id, "annotation": annotation, "summary": detector_annotation_summary(db)}
 
 
+def build_detector_candidates(db: Database, data_dir: Path, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = payload or {}
+    match_id = optional_int(payload.get("match_id"))
+    limit = max(10, min(500, optional_int(payload.get("limit")) or 120))
+    deaths = []
+    if match_id:
+        deaths = db.get_deaths(match_id)
+    else:
+        for match in db.list_matches()[:25]:
+            deaths.extend(db.get_deaths(int(match["id"])))
+    existing_annotations = annotated_frame_ids(db)
+    seen_frame_ids = set()
+    seen_hashes: List[str] = []
+    candidates = []
+    for death in deaths:
+        for frame in candidate_frames_for_death(db, data_dir, death):
+            frame_id = str(frame.get("frame_id") or "").strip()
+            if not frame_id or frame_id in seen_frame_ids:
+                continue
+            path = find_frame_path(data_dir, frame_id)
+            if not path or not path.exists():
+                continue
+            image_hash = image_fingerprint(path)
+            if image_hash and any(hamming_distance(image_hash, other) <= 3 for other in seen_hashes):
+                continue
+            seen_frame_ids.add(frame_id)
+            if image_hash:
+                seen_hashes.append(image_hash)
+            candidate = normalize_detector_candidate(death, frame, path, existing_annotations)
+            candidates.append(candidate)
+    candidates = sorted(candidates, key=lambda item: (-float(item.get("priority") or 0), int(item.get("death_id") or 0), int(item.get("frame_number") or 0)))[:limit]
+    result = {
+        "kind": "detector_candidate_queue",
+        "match_id": match_id,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "count": len(candidates),
+        "candidates": candidates,
+        "summary": f"Built {len(candidates)} detector labeling candidate(s).",
+    }
+    db.save_structured_analysis(match_id or 0, "detector_candidate_queue", result)
+    db.log("info", "detector", result["summary"], {"match_id": match_id, "limit": limit})
+    return {"ok": True, **result}
+
+
+def list_detector_candidates(db: Database, match_id: Optional[int] = None, limit: int = 120) -> Dict[str, Any]:
+    subject_id = int(match_id or 0)
+    latest = db.get_latest_structured_analysis("match", subject_id, "detector_candidate_queue")
+    payload = (latest or {}).get("payload") or {}
+    rows = list(payload.get("candidates") or [])[: max(1, min(500, int(limit or 120)))]
+    annotations = annotated_frame_ids(db)
+    prelabels = latest_prelabels_by_frame(db)
+    for row in rows:
+        frame_id = str(row.get("frame_id") or "")
+        row["labeled"] = frame_id in annotations
+        row["prelabel"] = prelabels.get(frame_id)
+        row["status"] = "labeled" if row["labeled"] else "prelabeled" if row.get("prelabel") else "needs_label"
+    return {
+        "ok": True,
+        "kind": "detector_candidate_queue",
+        "match_id": match_id,
+        "count": len(rows),
+        "candidates": rows,
+        "summary": payload.get("summary") or "No detector candidate queue yet.",
+    }
+
+
+def prelabel_detector_candidates(db: Database, data_dir: Path, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = payload or {}
+    model_path = str(payload.get("model_path") or db.get_setting("enemy_detector_model_path", "") or "").strip()
+    if not model_path:
+        return {"ok": False, "message": "enemy detector model path is not configured"}
+    if not Path(model_path).exists():
+        return {"ok": False, "message": "enemy detector model file does not exist"}
+    queue = list_detector_candidates(db, optional_int(payload.get("match_id")), optional_int(payload.get("limit")) or 80)
+    rows = [row for row in queue.get("candidates") or [] if not row.get("labeled")]
+    saved = []
+    for row in rows:
+        frame_id = str(row.get("frame_id") or "")
+        path = find_frame_path(data_dir, frame_id)
+        if not path:
+            continue
+        inference = infer_image(model_path, str(path), confidence=float(payload.get("confidence") or 0.25))
+        prelabel = {
+            "kind": "detector_prelabel",
+            "frame_id": frame_id,
+            "death_id": row.get("death_id"),
+            "candidate_id": row.get("candidate_id"),
+            "detections": inference.get("detections") or [],
+            "ok": bool(inference.get("ok")),
+            "error": inference.get("error") or "",
+            "model_path": model_path,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        db.save_death_analysis(int(row.get("death_id") or 0), "detector_prelabel", prelabel)
+        saved.append(prelabel)
+    return {"ok": True, "count": len(saved), "prelabels": saved, "message": f"Pre-labeled {len(saved)} detector candidate frame(s)."}
+
+
+def evaluate_detector_dataset(db: Database, data_dir: Path, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = payload or {}
+    model_path = str(payload.get("model_path") or db.get_setting("enemy_detector_model_path", "") or "").strip()
+    annotations_by_frame = annotations_grouped_by_frame(db)
+    if not annotations_by_frame:
+        return {"ok": False, "message": "No detector annotations available for evaluation."}
+    if not model_path:
+        return {"ok": False, "message": "enemy detector model path is not configured"}
+    if not Path(model_path).exists():
+        return {"ok": False, "message": "enemy detector model file does not exist"}
+    confidence = float(payload.get("confidence") or 0.25)
+    frames = sorted(annotations_by_frame.keys())[: max(1, min(500, optional_int(payload.get("limit")) or 120))]
+    true_positive = false_positive = false_negative = 0
+    examples = []
+    for frame_id in frames:
+        path = find_frame_path(data_dir, frame_id)
+        if not path:
+            continue
+        expected = [row for row in annotations_by_frame[frame_id] if row.get("label") != NEGATIVE_CLASS]
+        actual = infer_image(model_path, str(path), confidence=confidence)
+        detections = actual.get("detections") or []
+        matched = set()
+        for detection in detections:
+            best_index, best_iou = best_iou_match(detection, expected, matched)
+            if best_iou >= 0.30:
+                true_positive += 1
+                matched.add(best_index)
+            else:
+                false_positive += 1
+        false_negative += max(0, len(expected) - len(matched))
+        if len(examples) < 20 and (false_positive or false_negative):
+            examples.append({"frame_id": frame_id, "expected": expected, "detections": detections})
+    precision = true_positive / max(1, true_positive + false_positive)
+    recall = true_positive / max(1, true_positive + false_negative)
+    result = {
+        "kind": "detector_evaluation",
+        "ok": True,
+        "model_path": model_path,
+        "confidence": confidence,
+        "frames": len(frames),
+        "true_positive": true_positive,
+        "false_positive": false_positive,
+        "false_negative": false_negative,
+        "precision": round(precision, 3),
+        "recall": round(recall, 3),
+        "examples": examples,
+        "summary": f"Detector evaluation: precision {precision:.2f}, recall {recall:.2f} on {len(frames)} labeled frame(s).",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    db.save_structured_analysis(0, "detector_evaluation", result)
+    return result
+
+
 def normalize_detector_annotation(death_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     label = str(payload.get("label") or "enemy_body").strip()
     frame_id = str(payload.get("frame_id") or "").strip()
@@ -96,6 +249,161 @@ def normalize_detector_annotation(death_id: int, payload: Dict[str, Any]) -> Dic
         "source": "local-user",
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+
+def candidate_frames_for_death(db: Database, data_dir: Path, death: Dict[str, Any]) -> List[Dict[str, Any]]:
+    death_id = int(death.get("id") or 0)
+    frames: Dict[str, Dict[str, Any]] = {}
+    for analysis_type in ("local_ai_sequence", "keyframes"):
+        row = db.get_latest_structured_analysis("death", death_id, analysis_type)
+        for item in (((row or {}).get("payload") or {}).get("frames") or []):
+            frame_id = str(item.get("frame_id") or "").strip()
+            if not frame_id:
+                continue
+            frames[frame_id] = {**frames.get(frame_id, {}), **item, "source_analysis": analysis_type}
+    visual = (db.get_latest_structured_analysis("death", death_id, "clip_visual_signals") or {}).get("payload") or {}
+    visual_by_frame = {str(row.get("frame")): row for row in visual.get("timeline") or []}
+    for item in frames.values():
+        key = str(item.get("sequence_index") or item.get("index") or "")
+        if key in visual_by_frame:
+            item["visual_signal"] = visual_by_frame[key]
+    return list(frames.values())
+
+
+def normalize_detector_candidate(death: Dict[str, Any], frame: Dict[str, Any], path: Path, annotations: set[str]) -> Dict[str, Any]:
+    frame_id = str(frame.get("frame_id") or "")
+    rel = optional_float(frame.get("relative_second"))
+    seconds_before = optional_float(frame.get("seconds_before_death"))
+    if rel is None and seconds_before is not None:
+        rel = -seconds_before
+    visual = frame.get("visual_signal") or {}
+    priority = candidate_priority(frame, visual, rel)
+    reason_bits = []
+    if frame.get("role"):
+        reason_bits.append(str(frame.get("role")))
+    if visual.get("class"):
+        reason_bits.append(str(visual.get("class")).replace("_", " "))
+    if visual.get("contact_score") is not None:
+        reason_bits.append(f"contact {visual.get('contact_score')}")
+    return {
+        "candidate_id": f"death-{death.get('id')}-{frame_id}",
+        "death_id": int(death.get("id") or 0),
+        "match_id": int(death.get("match_id") or 0),
+        "frame_id": frame_id,
+        "frame_number": frame.get("sequence_index") or frame.get("index"),
+        "timestamp": frame.get("timestamp"),
+        "relative_second": rel,
+        "seconds_before_death": seconds_before,
+        "role": frame.get("role") or "frame",
+        "priority": round(priority, 3),
+        "reason": ", ".join(reason_bits) or "candidate frame",
+        "path": str(path),
+        "labeled": frame_id in annotations,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def candidate_priority(frame: Dict[str, Any], visual: Dict[str, Any], rel: Optional[float]) -> float:
+    score = 0.2
+    role = str(frame.get("role") or "").lower()
+    if "contact" in role:
+        score += 0.35
+    if "death" in role or "pressure" in role:
+        score += 0.20
+    if rel is not None and -5.0 <= rel <= 0.5:
+        score += 0.20
+    cls = str(visual.get("class") or "")
+    if "enemy_seen_by_detector" in cls:
+        score += 0.35
+    elif "contact" in cls:
+        score += 0.25
+    elif "damage" in cls or "death" in cls:
+        score += 0.10
+    score += min(0.20, float(visual.get("contact_score") or 0) * 0.20)
+    return min(1.0, score)
+
+
+def image_fingerprint(path: Path) -> str:
+    try:
+        image = Image.open(path).convert("L").resize((8, 8))
+    except Exception:
+        return ""
+    pixels = list(image.getdata())
+    avg = sum(pixels) / max(1, len(pixels))
+    return "".join("1" if value >= avg else "0" for value in pixels)
+
+
+def hamming_distance(left: str, right: str) -> int:
+    if not left or not right or len(left) != len(right):
+        return 999
+    return sum(1 for a, b in zip(left, right) if a != b)
+
+
+def annotated_frame_ids(db: Database) -> set[str]:
+    return {str((row.get("payload") or {}).get("frame_id") or "") for row in detector_annotation_rows(db, limit=10000) if (row.get("payload") or {}).get("frame_id")}
+
+
+def annotations_grouped_by_frame(db: Database) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in detector_annotation_rows(db, limit=10000):
+        payload = row.get("payload") or {}
+        frame_id = str(payload.get("frame_id") or "")
+        if frame_id:
+            grouped.setdefault(frame_id, []).append(payload)
+    return grouped
+
+
+def latest_prelabels_by_frame(db: Database) -> Dict[str, Dict[str, Any]]:
+    rows = [
+        item for item in db.list_structured_analyses("death", limit=5000)
+        if item.get("analysis_type") == "detector_prelabel"
+    ]
+    result: Dict[str, Dict[str, Any]] = {}
+    for row in reversed(rows):
+        payload = row.get("payload") or {}
+        frame_id = str(payload.get("frame_id") or "")
+        if frame_id:
+            result[frame_id] = payload
+    return result
+
+
+def detector_candidate_summary(db: Database) -> Dict[str, Any]:
+    latest = db.get_latest_structured_analysis("match", 0, "detector_candidate_queue")
+    payload = (latest or {}).get("payload") or {}
+    rows = payload.get("candidates") or []
+    labeled = len([row for row in rows if row.get("labeled") or str(row.get("frame_id") or "") in annotated_frame_ids(db)])
+    return {"count": len(rows), "labeled": labeled, "needs_label": max(0, len(rows) - labeled)}
+
+
+def best_iou_match(detection: Dict[str, Any], expected: List[Dict[str, Any]], matched: set[int]) -> Tuple[int, float]:
+    best_index = -1
+    best_score = 0.0
+    label = str(detection.get("label") or "")
+    for index, row in enumerate(expected):
+        if index in matched:
+            continue
+        if label and row.get("label") and label != row.get("label"):
+            continue
+        score = bbox_iou(detection.get("bbox_norm") or {}, row.get("bbox_norm") or {})
+        if score > best_score:
+            best_index = index
+            best_score = score
+    return best_index, best_score
+
+
+def bbox_iou(left: Dict[str, Any], right: Dict[str, Any]) -> float:
+    if not left or not right:
+        return 0.0
+    lx1, ly1 = float(left.get("x") or 0), float(left.get("y") or 0)
+    lx2, ly2 = lx1 + float(left.get("w") or 0), ly1 + float(left.get("h") or 0)
+    rx1, ry1 = float(right.get("x") or 0), float(right.get("y") or 0)
+    rx2, ry2 = rx1 + float(right.get("w") or 0), ry1 + float(right.get("h") or 0)
+    ix1, iy1 = max(lx1, rx1), max(ly1, ry1)
+    ix2, iy2 = min(lx2, rx2), min(ly2, ry2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    intersection = iw * ih
+    union = max(0.000001, (lx2 - lx1) * (ly2 - ly1) + (rx2 - rx1) * (ry2 - ry1) - intersection)
+    return intersection / union
 
 
 def optional_int(value: Any) -> Optional[int]:

@@ -34,6 +34,7 @@ const CALIBRATION_REGIONS = [
 ];
 let selectedCalibrationRegion = "minimap";
 let dragCalibration = null;
+let detectorBoxDrag = null;
 const LABEL_PRESETS = [
   "dry peek",
   "crosshair too low/wide",
@@ -116,7 +117,10 @@ async function loadVersionBadge() {
 }
 
 async function loadAutomation() {
-  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus] = await Promise.all([
+  const detectorCandidatePath = currentMatchId
+    ? `/api/detector/candidates?match_id=${encodeURIComponent(currentMatchId)}`
+    : "/api/detector/candidates";
+  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorCandidates, signals] = await Promise.all([
     api("/api/settings"),
     api("/api/jobs"),
     api("/api/watcher"),
@@ -142,6 +146,8 @@ async function loadAutomation() {
     api("/api/privacy/model-audit"),
     api("/api/sessions/report"),
     api("/api/detector/status"),
+    api(detectorCandidatePath),
+    api("/api/signals"),
   ]);
   renderAutomation(
     settings,
@@ -168,13 +174,15 @@ async function loadAutomation() {
     tuning,
     modelAudit,
     sessionReport,
-    detectorStatus
+    detectorStatus,
+    detectorCandidates,
+    signals
   );
   latestJobs = jobs.jobs || [];
   renderJobProgressPanel();
 }
 
-function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus) {
+function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorCandidates, signals) {
   const jobRows = jobs.slice(0, 8).map((job) => `
     <li>
       <strong>#${job.id} ${escapeHtml(job.name)}</strong>
@@ -394,7 +402,7 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
       <p class="muted">Current ${escapeHtml(tuning.current || "normal")} · recommended ${escapeHtml(tuning.recommended || "normal")}</p>
       <button class="secondary" data-action="apply-detector-tuning">Apply Tuning</button>
     </div>
-    ${renderTrainedDetectorPanel(detectorStatus || {})}
+    ${renderTrainedDetectorPanel(detectorStatus || {}, detectorCandidates || {}, signals || {})}
     <div class="automation-block">
       <h3>Backups</h3>
       <button class="secondary" data-action="backup-db">Backup DB</button>
@@ -515,8 +523,15 @@ function renderAnalyticsBars(analytics) {
   }).join("") || '<p class="muted">No trend bars yet.</p>';
 }
 
-function renderTrainedDetectorPanel(detector) {
+function renderTrainedDetectorPanel(detector, candidates, signals) {
   const annotations = detector.annotations || {};
+  const candidateRows = (candidates.candidates || []).slice(0, 8).map((item) => `
+    <li>
+      <button class="ghost" data-action="jump" data-ts="${escapeAttr(item.timestamp || 0)}">${escapeHtml(formatTs(item.timestamp || 0))}</button>
+      <strong>${escapeHtml(item.role || "frame")}</strong>
+      <span>${escapeHtml(item.status || "needs_label")} · priority ${escapeHtml(item.priority || 0)} · death #${escapeHtml(item.death_id || "")}</span>
+    </li>
+  `).join("");
   const counts = Object.entries(annotations.class_counts || {})
     .map(([label, count]) => `<span class="tag">${escapeHtml(label)} ${escapeHtml(count)}</span>`)
     .join("");
@@ -525,13 +540,21 @@ function renderTrainedDetectorPanel(detector) {
       <h3>Trained Enemy Detector</h3>
       <p>${escapeHtml(detector.summary || "Detector status unavailable.")}</p>
       <p class="muted">Model ${detector.model_exists ? "ready" : "missing"} · Ultralytics ${detector.ultralytics_available ? "installed" : "not installed"} · boxes ${escapeHtml(annotations.box_count || 0)} · frames ${escapeHtml(annotations.frame_count || 0)}</p>
+      <p class="muted">Signal contracts: ${escapeHtml((signals.signals || []).length || 0)} · candidate queue: ${escapeHtml(candidates.count || 0)} frame(s)</p>
       <div class="tag-row">${counts || '<span class="tag">no boxes yet</span>'}</div>
       ${detector.suggested_command ? `<label>Suggested command <input id="detectorSuggestedCommand" type="text" value="${escapeAttr(detector.suggested_command)}" readonly /></label>` : ""}
       <div class="row">
+        <button class="secondary" data-action="build-detector-candidates">Build Label Queue</button>
+        <button class="secondary" data-action="prelabel-detector-candidates">Pre-label Queue</button>
+        <button class="secondary" data-action="evaluate-detector">Evaluate Detector</button>
         <button class="secondary" data-action="export-detector-dataset">Export YOLO Dataset</button>
         <button data-action="train-detector">Train Detector</button>
         ${detector.suggested_command ? '<button class="secondary" data-action="use-detector-command">Use Suggested Command</button>' : ""}
       </div>
+      <details class="advanced-actions">
+        <summary>Active-learning queue</summary>
+        <ul class="compact-list">${candidateRows || "<li>Build a label queue after extracting keyframes or running Clip Coach.</li>"}</ul>
+      </details>
       <p class="muted">Confirmed enemies come only from trained detector boxes, VLM evidence, or your labels. Red/HUD heuristics remain contact proxies.</p>
     </div>
   `;
@@ -889,6 +912,33 @@ async function trainDetector() {
   });
   setStatus(`Detector training queued as job #${payload.job_id}.`, { state: "busy", progress: 1 });
   ensureJobPolling();
+  await loadAutomation();
+}
+
+async function buildDetectorCandidates() {
+  const payload = await api("/api/detector/candidates", {
+    method: "POST",
+    body: JSON.stringify({ match_id: currentMatchId || "", limit: 160 }),
+  });
+  setStatus(payload.summary || "Detector label queue built.");
+  await loadAutomation();
+}
+
+async function prelabelDetectorCandidates() {
+  const payload = await api("/api/detector/prelabel", {
+    method: "POST",
+    body: JSON.stringify({ match_id: currentMatchId || "", limit: 80 }),
+  });
+  setStatus(payload.message || `Pre-labeled ${payload.count || 0} frame(s).`);
+  await loadAutomation();
+}
+
+async function evaluateDetector() {
+  const payload = await api("/api/detector/evaluate", {
+    method: "POST",
+    body: JSON.stringify({ limit: 120 }),
+  });
+  setStatus(payload.summary || "Detector evaluation complete.");
   await loadAutomation();
 }
 
@@ -1469,6 +1519,70 @@ async function saveDetectorAnnotation(button) {
   setStatus("Detector training box saved locally.");
   await Promise.all([loadAutomation(), currentMatchId ? loadReport(currentMatchId) : Promise.resolve()]);
 }
+
+function renderDetectorFrameCanvas(select) {
+  const card = select.closest(".death-card");
+  const canvas = card?.querySelector("[data-detector-canvas]");
+  const frameId = select.value || "";
+  if (!canvas) return;
+  if (!frameId) {
+    canvas.innerHTML = '<span class="muted">Choose a keyframe to draw a box.</span>';
+    return;
+  }
+  canvas.innerHTML = `
+    <img src="/api/vision/frame/${escapeAttr(frameId)}" alt="detector annotation frame" draggable="false" />
+    <div class="detector-drawn-box" hidden></div>
+  `;
+}
+
+function startDetectorBoxDrag(event) {
+  const canvas = event.target.closest("[data-detector-canvas]");
+  if (!canvas || !canvas.querySelector("img")) return;
+  const card = canvas.closest(".death-card");
+  const label = card?.querySelector('[data-field="detector_label"]')?.value || "";
+  if (label === "no_enemy") return;
+  event.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const startX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+  const startY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+  const box = canvas.querySelector(".detector-drawn-box");
+  box.hidden = false;
+  detectorBoxDrag = { canvas, card, box, startX, startY };
+  updateDetectorBoxDrag(event);
+}
+
+function updateDetectorBoxDrag(event) {
+  if (!detectorBoxDrag) return;
+  const { canvas, card, box, startX, startY } = detectorBoxDrag;
+  const rect = canvas.getBoundingClientRect();
+  const endX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+  const endY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+  const x = Math.min(startX, endX);
+  const y = Math.min(startY, endY);
+  const w = Math.abs(endX - startX);
+  const h = Math.abs(endY - startY);
+  box.style.left = `${x * 100}%`;
+  box.style.top = `${y * 100}%`;
+  box.style.width = `${w * 100}%`;
+  box.style.height = `${h * 100}%`;
+  setDetectorBoxInputs(card, x, y, w, h);
+}
+
+function stopDetectorBoxDrag() {
+  detectorBoxDrag = null;
+}
+
+function setDetectorBoxInputs(card, x, y, w, h) {
+  const set = (field, value) => {
+    const input = card?.querySelector(`[data-field="${field}"]`);
+    if (input) input.value = value > 0 ? value.toFixed(4) : "";
+  };
+  set("detector_bbox_x", x);
+  set("detector_bbox_y", y);
+  set("detector_bbox_w", w);
+  set("detector_bbox_h", h);
+}
+
 
 async function writeReport(id) {
   const payload = await api(`/api/matches/${id}/report/write`, { method: "POST" });
@@ -2850,7 +2964,7 @@ function renderDetectorAnnotationForm(death) {
       </summary>
       <p class="muted">Save boxes only when the frame visibly contains the object. Coordinates are normalized 0-1 across the full frame.</p>
       <div class="training-label-grid">
-        <label>Frame
+        <label class="wide">Frame
           <select data-field="detector_frame_id">
             <option value="">choose keyframe</option>
             ${frameOptions}
@@ -2866,6 +2980,12 @@ function renderDetectorAnnotationForm(death) {
         <label>W <input data-field="detector_bbox_w" type="number" min="0" max="1" step="0.001" placeholder="0.08" /></label>
         <label>H <input data-field="detector_bbox_h" type="number" min="0" max="1" step="0.001" placeholder="0.16" /></label>
         <label class="wide">Notes <input data-field="detector_notes" type="text" placeholder="enemy shoulder visible, head box, false red UI, etc." /></label>
+        <div class="detector-box-editor wide">
+          <div class="detector-frame-canvas" data-detector-canvas>
+            <span class="muted">Choose a keyframe to draw a box.</span>
+          </div>
+          <p class="muted">Drag from top-left to bottom-right. For no_enemy, leave the box empty.</p>
+        </div>
         <button class="secondary" data-action="save-detector-annotation" data-id="${death.id || ""}">Save Detector Box</button>
       </div>
     </details>
@@ -3620,6 +3740,7 @@ els.automationView.addEventListener("click", (event) => {
   if (!button) return;
   const action = button.dataset.action;
   if (action === "save-automation") saveAutomationSettings().catch((err) => setStatus(err.message));
+  if (action === "jump") jumpTo(button.dataset.ts);
   if (action === "save-setup") saveSetupWizard().catch((err) => setStatus(err.message));
   if (action === "start-watcher") startWatcher().catch((err) => setStatus(err.message));
   if (action === "stop-watcher") stopWatcher().catch((err) => setStatus(err.message));
@@ -3645,6 +3766,9 @@ els.automationView.addEventListener("click", (event) => {
   if (action === "load-prompt") loadPromptEditor();
   if (action === "save-prompt") savePromptTemplate().catch((err) => setStatus(err.message));
   if (action === "apply-detector-tuning") applyDetectorTuning().catch((err) => setStatus(err.message));
+  if (action === "build-detector-candidates") buildDetectorCandidates().catch((err) => setStatus(err.message));
+  if (action === "prelabel-detector-candidates") prelabelDetectorCandidates().catch((err) => setStatus(err.message));
+  if (action === "evaluate-detector") evaluateDetector().catch((err) => setStatus(err.message));
   if (action === "export-detector-dataset") exportDetectorDataset().catch((err) => setStatus(err.message));
   if (action === "train-detector") trainDetector().catch((err) => setStatus(err.message));
   if (action === "use-detector-command") useDetectorCommand();
@@ -3731,13 +3855,26 @@ els.reportView.addEventListener("click", (event) => {
 });
 
 els.reportView.addEventListener("change", (event) => {
-  if (event.target.id !== "overlayRegion") return;
-  selectedCalibrationRegion = event.target.value;
-  renderCalibrationOverlay();
+  if (event.target.id === "overlayRegion") {
+    selectedCalibrationRegion = event.target.value;
+    renderCalibrationOverlay();
+  }
+  if (event.target.matches('[data-field="detector_frame_id"]')) {
+    renderDetectorFrameCanvas(event.target);
+  }
+  if (event.target.matches('[data-field="detector_label"]') && event.target.value === "no_enemy") {
+    const card = event.target.closest(".death-card");
+    setDetectorBoxInputs(card, 0, 0, 0, 0);
+    const box = card?.querySelector(".detector-drawn-box");
+    if (box) box.hidden = true;
+  }
 });
 els.reportView.addEventListener("pointerdown", startCalibrationDrag);
+els.reportView.addEventListener("pointerdown", startDetectorBoxDrag);
 window.addEventListener("pointermove", moveCalibrationDrag);
+window.addEventListener("pointermove", updateDetectorBoxDrag);
 window.addEventListener("pointerup", stopCalibrationDrag);
+window.addEventListener("pointerup", stopDetectorBoxDrag);
 
 setStatus("Loading app...", { state: "busy" });
 loadSettings()

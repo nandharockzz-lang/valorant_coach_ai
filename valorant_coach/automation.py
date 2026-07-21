@@ -27,6 +27,7 @@ from .deep_analysis import analyze_hud, analyze_minimap, analyze_ocr, infer_roun
 from .memory import build_memory_prompt_context, load_coach_memory_state, save_coach_memory_state, update_coach_memory_from_review
 from .reports import build_report, write_markdown_report
 from .clipper import ffmpeg_path
+from .signals import signal_registry
 from .vision import (
     analyze_match_events,
     build_keyframe_gallery,
@@ -975,7 +976,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.22.0-local"
+APP_VERSION = "0.23.0-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -3182,6 +3183,8 @@ def render_model_prompt(db: Database, death: Dict[str, Any]) -> str:
         + "\n\n"
         + build_deterministic_signal_prompt(db, death)
         + "\n\n"
+        + build_signal_contract_prompt()
+        + "\n\n"
         + build_agent_coaching_prompt(db, death)
         + "\n\n"
         + build_knowledge_prompt_context(db, death)
@@ -3295,6 +3298,34 @@ def build_deterministic_signal_prompt(db: Database, death: Dict[str, Any]) -> st
         "instruction": "Treat deterministic signals as local measurements, not final coaching. Trained detector boxes are visual evidence; contact_proxy rows are only heuristic pressure cues and must not be called confirmed enemies.",
     }
     return "Deterministic local visual/OCR signals:\n" + json.dumps(compact, indent=2)[:2400]
+
+
+def build_signal_contract_prompt() -> str:
+    registry = signal_registry()
+    relevant_ids = [
+        "enemy_seen_by_detector",
+        "enemy_seen_by_vlm",
+        "contact_proxy",
+        "crosshair_activity",
+        "crosshair_drift",
+        "crosshair_to_contact",
+        "movement_risk",
+        "minimap_motion",
+        "claim_confidence",
+    ]
+    compact = [
+        {
+            "id": item["id"],
+            "source_type": item["source_type"],
+            "meaning": item["meaning"],
+            "not_meaning": item["not_meaning"],
+            "allowed_claims": item["allowed_claims"],
+            "forbidden_claims": item["forbidden_claims"],
+        }
+        for item in (registry.get("signals") or [])
+        if item.get("id") in relevant_ids
+    ]
+    return "Gameplay signal contract. Follow these boundaries when turning measurements into coaching claims:\n" + json.dumps(compact, indent=2)[:2200]
 
 
 def build_agent_coaching_prompt(db: Database, death: Dict[str, Any]) -> str:

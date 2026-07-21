@@ -19,3 +19,8 @@ The app must separate confirmed visual evidence from proxy signals.
 
 Heuristic signals must not be displayed as confirmed enemy detection. They can only support "possible contact" or "pressure" wording.
 
+The machine-readable signal registry is available at:
+
+```text
+GET /api/signals
+```

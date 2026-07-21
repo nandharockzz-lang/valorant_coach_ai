@@ -6,12 +6,15 @@ from PIL import Image
 
 from valorant_coach.db import Database
 from valorant_coach.detector import (
+    build_detector_candidates,
     detector_status,
     export_detector_dataset,
+    list_detector_candidates,
     save_detector_annotation,
     xyxy_to_norm,
     yolo_label_line,
 )
+from valorant_coach.signals import signal_registry
 
 
 class DetectorTests(unittest.TestCase):
@@ -63,6 +66,53 @@ class DetectorTests(unittest.TestCase):
 
             self.assertFalse(status["configured"])
             self.assertIn("annotations", status)
+
+    def test_candidate_queue_uses_saved_keyframes(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = Database(root / "coach.sqlite3")
+            match_id = db.upsert_match(str(root / "match.mp4"), "now", "imported")
+            death_id = db.create_death(match_id, None, 20.0, ["test"], "", 0.8)
+            frame_dir = root / "vision" / "frames"
+            frame_dir.mkdir(parents=True)
+            Image.new("RGB", (100, 100), "black").save(frame_dir / "candidate-a.jpg")
+            db.save_death_analysis(
+                death_id,
+                "keyframes",
+                {
+                    "frames": [
+                        {
+                            "frame_id": "candidate-a",
+                            "sequence_index": 1,
+                            "relative_second": -1.2,
+                            "seconds_before_death": 1.2,
+                            "role": "contact",
+                            "timestamp": 18.8,
+                        }
+                    ]
+                },
+            )
+
+            built = build_detector_candidates(db, root, {"match_id": match_id})
+            listed = list_detector_candidates(db, match_id)
+
+            self.assertTrue(built["ok"])
+            self.assertEqual(built["count"], 1)
+            self.assertEqual(listed["candidates"][0]["frame_id"], "candidate-a")
+            self.assertEqual(listed["candidates"][0]["status"], "needs_label")
+
+    def test_signal_registry_defines_claim_boundaries(self):
+        registry = signal_registry()
+
+        self.assertGreater(len(registry["signals"]), 5)
+        for item in registry["signals"]:
+            self.assertTrue(item["meaning"])
+            self.assertTrue(item["not_meaning"])
+            self.assertTrue(item["source_type"])
+            self.assertTrue(item["allowed_claims"])
+            self.assertTrue(item["forbidden_claims"])
+        self.assertIn("contact_proxy", registry["by_id"])
+        self.assertIn("Do not say confirmed enemy detected.", registry["by_id"]["contact_proxy"]["forbidden_claims"])
 
 
 if __name__ == "__main__":
