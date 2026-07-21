@@ -77,6 +77,7 @@ from .automation import (
 from .clipper import extract_death_clips, ffmpeg_path
 from .coach import build_coach_dashboard, build_guided_match_coach, build_match_review
 from .db import Database
+from .detector import detector_status, export_detector_dataset, save_detector_annotation, train_detector
 from .deep_analysis import (
     ai_review_status,
     analyze_gameplay,
@@ -177,6 +178,8 @@ class CoachHandler(BaseHTTPRequestHandler):
             self.json_response(benchmark_labels(DB))
         elif parsed.path == "/api/detector/tuning":
             self.json_response(detector_tuning(DB))
+        elif parsed.path == "/api/detector/status":
+            self.json_response(detector_status(DB, DATA_DIR))
         elif parsed.path == "/api/capabilities":
             ffmpeg = ffmpeg_path()
             tesseract = tesseract_path()
@@ -257,6 +260,7 @@ class CoachHandler(BaseHTTPRequestHandler):
                     "privacy_mode",
                     "detector_sensitivity",
                     "enemy_detector_command",
+                    "enemy_detector_model_path",
                     "ocr_engine",
                     "frame_sample_rate",
                     "death_scan_max_ocr_frames",
@@ -303,6 +307,15 @@ class CoachHandler(BaseHTTPRequestHandler):
                 self.json_response(save_benchmark_label(DB, self.read_json()))
             elif parsed.path == "/api/detector/tuning/apply":
                 self.json_response(apply_detector_tuning(DB))
+            elif parsed.path == "/api/detector/export":
+                self.json_response(export_detector_dataset(DB, DATA_DIR, self.read_json()))
+            elif parsed.path == "/api/detector/train":
+                payload = self.read_json()
+                job_id = JOBS.start(
+                    "Train enemy detector",
+                    lambda update, options=payload: detector_training_job(options, update),
+                )
+                self.json_response({"ok": True, "job_id": job_id})
             elif parsed.path == "/api/privacy/export":
                 self.json_response(privacy_export(PATHS, DB))
             elif parsed.path == "/api/privacy/wipe":
@@ -573,6 +586,8 @@ class CoachHandler(BaseHTTPRequestHandler):
                     self.json_response(save_clip_review_feedback(DB, death_id, self.read_json()))
                 elif parsed.path.endswith("/training-label"):
                     self.json_response(save_clip_training_label(DB, death_id, self.read_json()))
+                elif parsed.path.endswith("/detector-annotations"):
+                    self.json_response(save_detector_annotation(DB, death_id, self.read_json()))
                 elif parsed.path.endswith("/annotations"):
                     self.json_response(save_clip_annotation(DB, death_id, self.read_json()))
                 elif parsed.path.endswith("/advice"):
@@ -675,6 +690,7 @@ class CoachHandler(BaseHTTPRequestHandler):
             "privacy_mode": DB.get_setting("privacy_mode", "local-only"),
             "detector_sensitivity": DB.get_setting("detector_sensitivity", "normal"),
             "enemy_detector_command": DB.get_setting("enemy_detector_command", ""),
+            "enemy_detector_model_path": DB.get_setting("enemy_detector_model_path", ""),
             "ocr_engine": DB.get_setting("ocr_engine", "tesseract"),
             "frame_sample_rate": DB.get_setting("frame_sample_rate", "standard"),
             "death_scan_max_ocr_frames": DB.get_setting("death_scan_max_ocr_frames", "180"),
@@ -811,3 +827,10 @@ def batch_death_job(match_id: int, update: Any) -> Dict[str, Any]:
     queue = build_review_queue(DB, match_id)
     write_markdown_report(DB, REPORTS_DIR, match_id)
     return {"death_batch": result, "review_queue": queue}
+
+
+def detector_training_job(options: Dict[str, Any], update: Any) -> Dict[str, Any]:
+    update("Exporting YOLO detector dataset.", 5)
+    result = train_detector(DB, DATA_DIR, options)
+    update(result.get("message") or "Detector training finished.", 100 if result.get("ok") else 95)
+    return result

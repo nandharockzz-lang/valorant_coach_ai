@@ -108,6 +108,18 @@ Current flow:
 - Combat-report-only detection must emit on panel appearance, then wait for the panel to disappear before re-arming; sustained post-death combat report visibility is not a new death.
 - Confirmed markers must remain preserved; only pending duplicate suggestions are cleaned.
 
+### ADR-008: Enemy Detection Signal Contract
+
+**Decision:** Only a trained local detector, local VLM claim with cited visual evidence, or user annotation may create a confirmed enemy signal.
+
+**Rationale:** Red/HUD/motion heuristics are useful pressure cues but do not prove that a visible object is an enemy. The coach must not fake certainty.
+
+**Implications:**
+- Existing red/contact heuristics are `contact_proxy`, not confirmed enemy detection.
+- The trained detector is optional and local. It returns JSON boxes through the existing `enemy_detector_command` hook.
+- Detector training data is built from user-labeled imported clips and exported in YOLO format.
+- Clip Coach must keep detector evidence separate from local VLM evidence and deterministic proxy evidence.
+
 ## Skill Usage
 
 - Use `senior-architect` when making architecture decisions, ADRs, major trade-offs, or system design changes.

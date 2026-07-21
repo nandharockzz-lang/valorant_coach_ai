@@ -975,7 +975,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.21.1-local"
+APP_VERSION = "0.22.0-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -2138,8 +2138,11 @@ def classify_clip_frame(metrics: Any, object_proxy: Dict[str, Any], contact_scor
         return "post_death_or_death_ui"
     if metrics.death_score >= 0.52 or metrics.center_red >= 0.22:
         return "damage_or_death_cue"
+    detector = object_proxy.get("trained_enemy_detector") or {}
+    if detector.get("visible") and float(detector.get("confidence") or 0) >= 0.35:
+        return "enemy_seen_by_detector"
     if object_proxy.get("enemy_like_region", {}).get("confidence", 0) >= confirmed_threshold or contact_score >= contact_threshold + 0.10:
-        return "confirmed_contact_proxy"
+        return "strong_contact_proxy"
     if object_proxy.get("enemy_like_region", {}).get("confidence", 0) >= possible_threshold or contact_score >= max(0.28, contact_threshold - 0.08):
         return "possible_contact_proxy"
     return "no_contact_signal"
@@ -2151,19 +2154,22 @@ def detect_frame_objects(arr: np.ndarray, calibration: Dict[str, Dict[str, float
     center = crop_region(arr, center_region)
     enemy = detect_enemy_like_region(center, center_region, detector_profile)
     external = run_external_enemy_detector(frame_path, detector_profile)
-    if external.get("available") and float(external.get("confidence") or 0) > float(enemy.get("confidence") or 0):
-        enemy = {
+    trained = {"available": bool(external.get("available")), "visible": False, "confidence": 0.0}
+    if external.get("available"):
+        trained = {
             "visible": bool(external.get("visible")),
             "confidence": round(float(external.get("confidence") or 0), 2),
             "bbox_norm": external.get("bbox_norm") or enemy.get("bbox_norm"),
             "center_norm": external.get("center_norm") or enemy.get("center_norm"),
-            "source": "external_detector",
+            "label": external.get("label") or "enemy",
+            "source": "trained_detector",
         }
     crosshair = estimate_crosshair_center(arr, calibration.get("crosshair") or {"x": 0.47, "y": 0.47, "w": 0.06, "h": 0.06})
     spike = detect_bright_icon(crop_region(arr, calibration.get("hud_top") or {"x": 0.2, "y": 0, "w": 0.6, "h": 0.14}), "spike_or_round_icon")
     weapon = detect_bright_icon(crop_region(arr, calibration.get("hud_bottom") or {"x": 0.2, "y": 0.78, "w": 0.6, "h": 0.22}), "weapon_or_ammo_icon")
     return {
         "enemy_like_region": enemy,
+        "trained_enemy_detector": trained,
         "external_enemy_detector": external,
         "crosshair": crosshair,
         "spike_icon_proxy": spike,
@@ -2197,7 +2203,7 @@ def run_external_enemy_detector(frame_path: Optional[Path], detector_profile: Di
     confidence = normalize_confidence(best.get("confidence", best.get("score", 0)))
     bbox = best.get("bbox_norm") or best.get("box") or {}
     center = best.get("center_norm") or bbox_center_norm(bbox)
-    return {"available": True, "visible": confidence >= 0.35, "confidence": confidence, "bbox_norm": bbox, "center_norm": center, "label": best.get("label") or "enemy"}
+    return {"available": True, "visible": confidence >= 0.35, "confidence": confidence, "bbox_norm": bbox, "center_norm": center, "label": best.get("label") or "enemy", "source": "external_detector_json"}
 
 
 def bbox_center_norm(bbox: Any) -> Dict[str, float]:
@@ -2241,6 +2247,8 @@ def detect_enemy_like_region(region: np.ndarray, source_region: Dict[str, float]
         "visible": confidence >= 0.35,
         "confidence": round(confidence, 2),
         "density": round(density, 4),
+        "source": "heuristic_color_proxy",
+        "meaning": "red/contact proxy only; not confirmed enemy identity",
         "bbox_norm": {
             "x": round(float(source_region["x"]) + x1 * float(source_region["w"]), 3),
             "y": round(float(source_region["y"]) + y1 * float(source_region["h"]), 3),
@@ -2282,7 +2290,9 @@ def detect_bright_icon(region: np.ndarray, label: str) -> Dict[str, Any]:
 
 
 def crosshair_to_contact_measurement(object_proxy: Dict[str, Any]) -> Dict[str, Any]:
-    enemy = object_proxy.get("enemy_like_region") or {}
+    enemy = object_proxy.get("trained_enemy_detector") or {}
+    if not enemy.get("visible"):
+        enemy = object_proxy.get("enemy_like_region") or {}
     crosshair = object_proxy.get("crosshair") or {}
     center = enemy.get("center_norm") or {}
     if not enemy.get("visible") or not center:
@@ -2300,6 +2310,8 @@ def crosshair_to_contact_measurement(object_proxy: Dict[str, Any]) -> Dict[str, 
         "vertical_error": vertical,
         "horizontal_error": horizontal,
         "confidence": round(min(float(enemy.get("confidence") or 0), float(crosshair.get("confidence") or 0.3)), 2),
+        "source": enemy.get("source") or "unknown",
+        "meaning": "trained detector alignment" if enemy.get("source") == "trained_detector" else "contact proxy alignment only",
     }
 
 
@@ -2412,16 +2424,21 @@ def score_clip_minimap(timeline: List[Dict[str, Any]]) -> Dict[str, Any]:
 def build_enemy_visibility_proxy(timeline: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     rows = []
     for row in timeline:
+        trained = ((row.get("object_proxy") or {}).get("trained_enemy_detector") or {})
         score = float(row.get("contact_score") or 0)
-        if score < 0.34:
+        if not trained.get("visible") and score < 0.34:
             continue
+        detector_confidence = float(trained.get("confidence") or 0)
         rows.append(
             {
                 "frame": row.get("frame"),
                 "timestamp": row.get("timestamp"),
                 "relative_second": row.get("relative_second"),
-                "visibility_score": round(score, 3),
-                "classification": "likely contact cue" if score >= 0.48 else "possible contact cue",
+                "visibility_score": round(max(score, detector_confidence), 3),
+                "classification": "enemy seen by trained detector" if trained.get("visible") else "likely contact cue" if score >= 0.48 else "possible contact cue",
+                "source": "trained_detector" if trained.get("visible") else "contact_proxy",
+                "bbox_norm": trained.get("bbox_norm") or {},
+                "label": trained.get("label") or "",
                 "reason": row.get("reason") or "",
             }
         )
@@ -3266,7 +3283,8 @@ def build_deterministic_signal_prompt(db: Database, death: Dict[str, Any]) -> st
             "crosshair_score": visual.get("crosshair_score") or {},
             "movement_read": visual.get("movement_read") or {},
             "minimap_read": visual.get("minimap_read") or {},
-            "enemy_visibility_timeline": (visual.get("enemy_visibility_timeline") or [])[:8],
+            "enemy_contact_timeline": (visual.get("enemy_visibility_timeline") or [])[:8],
+            "signal_contract": "Rows with source=trained_detector are confirmed detector evidence. Rows with source=contact_proxy are heuristic pressure only and must not be treated as confirmed enemies.",
         },
         "ocr_regions": {
             "summary": ocr.get("summary") or "",
@@ -3274,7 +3292,7 @@ def build_deterministic_signal_prompt(db: Database, death: Dict[str, Any]) -> st
             "reads": (ocr.get("reads") or [])[:8],
         },
         "past_review_feedback_for_this_marker": feedback,
-        "instruction": "Treat deterministic signals as local measurements, not final coaching. Use them to verify or question what the frame images appear to show.",
+        "instruction": "Treat deterministic signals as local measurements, not final coaching. Trained detector boxes are visual evidence; contact_proxy rows are only heuristic pressure cues and must not be called confirmed enemies.",
     }
     return "Deterministic local visual/OCR signals:\n" + json.dumps(compact, indent=2)[:2400]
 

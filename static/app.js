@@ -116,7 +116,7 @@ async function loadVersionBadge() {
 }
 
 async function loadAutomation() {
-  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport] = await Promise.all([
+  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus] = await Promise.all([
     api("/api/settings"),
     api("/api/jobs"),
     api("/api/watcher"),
@@ -141,6 +141,7 @@ async function loadAutomation() {
     api("/api/detector/tuning"),
     api("/api/privacy/model-audit"),
     api("/api/sessions/report"),
+    api("/api/detector/status"),
   ]);
   renderAutomation(
     settings,
@@ -166,13 +167,14 @@ async function loadAutomation() {
     prompts,
     tuning,
     modelAudit,
-    sessionReport
+    sessionReport,
+    detectorStatus
   );
   latestJobs = jobs.jobs || [];
   renderJobProgressPanel();
 }
 
-function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport) {
+function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus) {
   const jobRows = jobs.slice(0, 8).map((job) => `
     <li>
       <strong>#${job.id} ${escapeHtml(job.name)}</strong>
@@ -254,6 +256,7 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
         </select>
       </label>
       <label>Enemy detector command <input id="enemyDetectorCommand" type="text" value="${escapeAttr(settings.enemy_detector_command || "")}" placeholder="optional local detector {image}" /></label>
+      <label>Enemy detector model <input id="enemyDetectorModelPath" type="text" value="${escapeAttr(settings.enemy_detector_model_path || "")}" placeholder="optional best.pt path" /></label>
       <label>Frame sample rate
         <select id="frameSampleRate">
           ${["light", "standard", "dense"].map((item) => `<option value="${item}" ${settings.frame_sample_rate === item ? "selected" : ""}>${item}</option>`).join("")}
@@ -391,6 +394,7 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
       <p class="muted">Current ${escapeHtml(tuning.current || "normal")} · recommended ${escapeHtml(tuning.recommended || "normal")}</p>
       <button class="secondary" data-action="apply-detector-tuning">Apply Tuning</button>
     </div>
+    ${renderTrainedDetectorPanel(detectorStatus || {})}
     <div class="automation-block">
       <h3>Backups</h3>
       <button class="secondary" data-action="backup-db">Backup DB</button>
@@ -511,6 +515,28 @@ function renderAnalyticsBars(analytics) {
   }).join("") || '<p class="muted">No trend bars yet.</p>';
 }
 
+function renderTrainedDetectorPanel(detector) {
+  const annotations = detector.annotations || {};
+  const counts = Object.entries(annotations.class_counts || {})
+    .map(([label, count]) => `<span class="tag">${escapeHtml(label)} ${escapeHtml(count)}</span>`)
+    .join("");
+  return `
+    <div class="automation-block">
+      <h3>Trained Enemy Detector</h3>
+      <p>${escapeHtml(detector.summary || "Detector status unavailable.")}</p>
+      <p class="muted">Model ${detector.model_exists ? "ready" : "missing"} · Ultralytics ${detector.ultralytics_available ? "installed" : "not installed"} · boxes ${escapeHtml(annotations.box_count || 0)} · frames ${escapeHtml(annotations.frame_count || 0)}</p>
+      <div class="tag-row">${counts || '<span class="tag">no boxes yet</span>'}</div>
+      ${detector.suggested_command ? `<label>Suggested command <input id="detectorSuggestedCommand" type="text" value="${escapeAttr(detector.suggested_command)}" readonly /></label>` : ""}
+      <div class="row">
+        <button class="secondary" data-action="export-detector-dataset">Export YOLO Dataset</button>
+        <button data-action="train-detector">Train Detector</button>
+        ${detector.suggested_command ? '<button class="secondary" data-action="use-detector-command">Use Suggested Command</button>' : ""}
+      </div>
+      <p class="muted">Confirmed enemies come only from trained detector boxes, VLM evidence, or your labels. Red/HUD heuristics remain contact proxies.</p>
+    </div>
+  `;
+}
+
 async function saveAutomationSettings() {
   await api("/api/settings", {
     method: "POST",
@@ -521,6 +547,7 @@ async function saveAutomationSettings() {
       auto_analysis: document.querySelector("#autoAnalysis").value,
       detector_sensitivity: document.querySelector("#detectorSensitivity").value,
       enemy_detector_command: document.querySelector("#enemyDetectorCommand")?.value || "",
+      enemy_detector_model_path: document.querySelector("#enemyDetectorModelPath")?.value || "",
       frame_sample_rate: document.querySelector("#frameSampleRate").value,
       death_scan_max_ocr_frames: document.querySelector("#deathScanMaxOcrFrames").value,
       skip_completed_analysis: document.querySelector("#skipCompletedAnalysis").value,
@@ -847,6 +874,31 @@ async function applyDetectorTuning() {
   const payload = await api("/api/detector/tuning/apply", { method: "POST" });
   setStatus(`Detector sensitivity set to ${payload.tuning.recommended}.`);
   await loadAutomation();
+}
+
+async function exportDetectorDataset() {
+  const payload = await api("/api/detector/export", { method: "POST", body: JSON.stringify({}) });
+  setStatus(payload.message || "Detector dataset exported.");
+  await loadAutomation();
+}
+
+async function trainDetector() {
+  const payload = await api("/api/detector/train", {
+    method: "POST",
+    body: JSON.stringify({ epochs: 40, imgsz: 640 }),
+  });
+  setStatus(`Detector training queued as job #${payload.job_id}.`, { state: "busy", progress: 1 });
+  ensureJobPolling();
+  await loadAutomation();
+}
+
+function useDetectorCommand() {
+  const suggested = document.querySelector("#detectorSuggestedCommand")?.value || "";
+  const command = document.querySelector("#enemyDetectorCommand");
+  if (command && suggested) {
+    command.value = suggested;
+    setStatus("Detector command filled. Save settings to apply it.");
+  }
 }
 
 async function privacyExport() {
@@ -1390,6 +1442,32 @@ async function saveClipTrainingLabel(button) {
   setStatus("Coach training label saved. Future review queue ranking and prompts will use it.");
   await Promise.all([loadCoach(), loadAutomation()]);
   if (currentMatchId) await loadReport(currentMatchId);
+}
+
+async function saveDetectorAnnotation(button) {
+  const card = button.closest(".death-card");
+  const deathId = button.dataset.id;
+  const read = (field) => card?.querySelector(`[data-field="${field}"]`)?.value || "";
+  const frameSelect = card?.querySelector('[data-field="detector_frame_id"]');
+  const selected = frameSelect?.selectedOptions?.[0];
+  await api(`/api/deaths/${deathId}/detector-annotations`, {
+    method: "POST",
+    body: JSON.stringify({
+      frame_id: read("detector_frame_id"),
+      frame_number: selected?.dataset.frame || "",
+      relative_second: selected?.dataset.rel || "",
+      label: read("detector_label") || "enemy_body",
+      bbox_norm: {
+        x: read("detector_bbox_x"),
+        y: read("detector_bbox_y"),
+        w: read("detector_bbox_w"),
+        h: read("detector_bbox_h"),
+      },
+      notes: read("detector_notes"),
+    }),
+  });
+  setStatus("Detector training box saved locally.");
+  await Promise.all([loadAutomation(), currentMatchId ? loadReport(currentMatchId) : Promise.resolve()]);
 }
 
 async function writeReport(id) {
@@ -2708,6 +2786,7 @@ function renderDeathCard(death) {
         ${keyframes}
         ${understanding}
         ${localAi}
+        ${renderDetectorAnnotationForm(death)}
         ${annotations}
         <div class="row">
           <button class="secondary" data-action="loop-death" data-ts="${death.timestamp || 0}">Loop Clip</button>
@@ -2757,6 +2836,40 @@ function renderKeyframes(row) {
     </figure>
   `).join("");
   return `<div class="keyframe-gallery">${frames}</div>`;
+}
+
+function renderDetectorAnnotationForm(death) {
+  const frameOptions = (((death.keyframes || {}).payload || {}).frames || []).map((item) => (
+    `<option value="${escapeAttr(item.frame_id || "")}" data-frame="${escapeAttr(item.sequence_index || item.index || "")}" data-rel="${escapeAttr(item.relative_second ?? "")}">${escapeHtml(`${item.sequence_index || item.index || "frame"} ${item.role || ""}`)}</option>`
+  )).join("");
+  return `
+    <details class="training-label-card">
+      <summary>
+        <span>Enemy Detector Training Box</span>
+        <strong>YOLO</strong>
+      </summary>
+      <p class="muted">Save boxes only when the frame visibly contains the object. Coordinates are normalized 0-1 across the full frame.</p>
+      <div class="training-label-grid">
+        <label>Frame
+          <select data-field="detector_frame_id">
+            <option value="">choose keyframe</option>
+            ${frameOptions}
+          </select>
+        </label>
+        <label>Label
+          <select data-field="detector_label">
+            ${["enemy_body", "enemy_head", "teammate", "weapon", "ability_effect", "no_enemy"].map((item) => `<option value="${item}">${item}</option>`).join("")}
+          </select>
+        </label>
+        <label>X <input data-field="detector_bbox_x" type="number" min="0" max="1" step="0.001" placeholder="0.45" /></label>
+        <label>Y <input data-field="detector_bbox_y" type="number" min="0" max="1" step="0.001" placeholder="0.30" /></label>
+        <label>W <input data-field="detector_bbox_w" type="number" min="0" max="1" step="0.001" placeholder="0.08" /></label>
+        <label>H <input data-field="detector_bbox_h" type="number" min="0" max="1" step="0.001" placeholder="0.16" /></label>
+        <label class="wide">Notes <input data-field="detector_notes" type="text" placeholder="enemy shoulder visible, head box, false red UI, etc." /></label>
+        <button class="secondary" data-action="save-detector-annotation" data-id="${death.id || ""}">Save Detector Box</button>
+      </div>
+    </details>
+  `;
 }
 
 function renderUnderstanding(row) {
@@ -3532,6 +3645,9 @@ els.automationView.addEventListener("click", (event) => {
   if (action === "load-prompt") loadPromptEditor();
   if (action === "save-prompt") savePromptTemplate().catch((err) => setStatus(err.message));
   if (action === "apply-detector-tuning") applyDetectorTuning().catch((err) => setStatus(err.message));
+  if (action === "export-detector-dataset") exportDetectorDataset().catch((err) => setStatus(err.message));
+  if (action === "train-detector") trainDetector().catch((err) => setStatus(err.message));
+  if (action === "use-detector-command") useDetectorCommand();
   if (action === "refresh-diagnostics") loadAutomation().then(() => setStatus("Diagnostics refreshed.")).catch((err) => setStatus(err.message));
   if (action === "refresh-evaluation") loadAutomation().then(() => setStatus("Benchmark refreshed.")).catch((err) => setStatus(err.message));
   if (action === "privacy-export") privacyExport().catch((err) => setStatus(err.message));
@@ -3601,6 +3717,7 @@ els.reportView.addEventListener("click", (event) => {
   if (action === "fill-review-draft") fillReviewDraft(button);
   if (action === "clip-review-feedback") saveClipReviewFeedback(button).catch((err) => setStatus(err.message));
   if (action === "save-training-label") saveClipTrainingLabel(button).catch((err) => setStatus(err.message));
+  if (action === "save-detector-annotation") saveDetectorAnnotation(button).catch((err) => setStatus(err.message));
   if (action === "advice-feedback") saveAdviceFeedback(button.dataset.id, button.dataset.verdict).catch((err) => setStatus(err.message));
   if (action === "save-death") saveDeath(button).catch((err) => setStatus(err.message));
   if (action === "save-context") saveDeathContext(button).catch((err) => setStatus(err.message));
