@@ -55,6 +55,7 @@ Current flow:
 - ffmpeg failures can stop Clip Coach before LM Studio receives any request.
 - The app logs must show each stage: frame prep, context extraction POST, final review POST, response received.
 - Windows subprocess output must be decoded with `encoding="utf-8", errors="replace"` to avoid cp1252 crashes.
+- Every local model request must fit the configured context window, default `8192` tokens. The app should reserve output tokens, estimate image tokens, trim prompt context, and reduce frame count before sending requests to LM Studio/Ollama.
 
 ### ADR-004: Knowledge Base Role
 

@@ -321,6 +321,12 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
       <label>FPS override
         <input id="localAiReviewFps" type="number" min="1" max="20" step="1" value="${escapeAttr(localAi.review_fps || "")}" placeholder="mode default" />
       </label>
+      <label>Context limit
+        <input id="localAiContextLimit" type="number" min="4096" max="131072" step="512" value="${escapeAttr(localAi.context_limit || "8192")}" />
+      </label>
+      <label>Image token estimate
+        <input id="localAiImageTokenEstimate" type="number" min="256" max="4096" step="64" value="${escapeAttr(localAi.image_token_estimate || "900")}" />
+      </label>
       <div class="row compact-actions">
         <button class="secondary" data-action="set-local-ai-window" data-window="5">5s</button>
         <button class="secondary" data-action="set-local-ai-window" data-window="10">10s</button>
@@ -330,7 +336,7 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
         <button class="secondary" data-action="set-local-ai-fps" data-fps="12">12 FPS</button>
         <button class="secondary" data-action="set-local-ai-fps" data-fps="15">15 FPS</button>
       </div>
-      <p class="muted">Active sequence: ${escapeHtml(localAi.review_mode_label || "")} · frame cap ${escapeHtml(localAi.review_frame_limit || "default")}</p>
+      <p class="muted">Active sequence: ${escapeHtml(localAi.review_mode_label || "")} · frame cap ${escapeHtml(localAi.review_frame_limit || "default")} · request budget ${escapeHtml(localAi.context_limit || "8192")} tokens</p>
       <label>Base URL <input id="localAiBaseUrl" type="text" value="${escapeAttr(localAi.base_url || "")}" placeholder="http://127.0.0.1:11434" /></label>
       <label>Custom command <input id="localAiCommand" type="text" value="${escapeAttr(localAi.command || "")}" placeholder="python C:\\path\\review_clip.py" /></label>
       <div class="row">
@@ -635,6 +641,8 @@ async function saveLocalAiConfig() {
     review_mode: document.querySelector("#localAiReviewMode").value,
     review_fps: document.querySelector("#localAiReviewFps").value,
     review_window_seconds: document.querySelector("#localAiReviewWindow").value,
+    context_limit: document.querySelector("#localAiContextLimit").value,
+    image_token_estimate: document.querySelector("#localAiImageTokenEstimate").value,
     model: document.querySelector("#localAiModel").value,
     base_url: document.querySelector("#localAiBaseUrl").value,
     command: document.querySelector("#localAiCommand").value,
@@ -653,12 +661,16 @@ function useLmStudioDefaults() {
   const reviewMode = document.querySelector("#localAiReviewMode");
   const reviewFps = document.querySelector("#localAiReviewFps");
   const reviewWindow = document.querySelector("#localAiReviewWindow");
+  const contextLimit = document.querySelector("#localAiContextLimit");
+  const imageTokenEstimate = document.querySelector("#localAiImageTokenEstimate");
   if (provider) provider.value = "lmstudio";
   if (baseUrl) baseUrl.value = "http://127.0.0.1:1234/v1";
   if (purpose) purpose.value = "coach";
   if (reviewMode) reviewMode.value = "contact";
   if (reviewFps) reviewFps.value = "";
   if (reviewWindow) reviewWindow.value = "10";
+  if (contextLimit) contextLimit.value = "8192";
+  if (imageTokenEstimate) imageTokenEstimate.value = "900";
   if (model && !model.value) model.value = "local-model";
   if (command) command.value = "";
   setStatus("LM Studio defaults filled. If LM Studio shows a specific model ID, paste it into Model before saving.");
@@ -673,12 +685,16 @@ function useOlmocrDefaults() {
   const reviewMode = document.querySelector("#localAiReviewMode");
   const reviewFps = document.querySelector("#localAiReviewFps");
   const reviewWindow = document.querySelector("#localAiReviewWindow");
+  const contextLimit = document.querySelector("#localAiContextLimit");
+  const imageTokenEstimate = document.querySelector("#localAiImageTokenEstimate");
   if (provider) provider.value = "lmstudio";
   if (baseUrl) baseUrl.value = "http://127.0.0.1:1234/v1";
   if (purpose) purpose.value = "ocr";
   if (reviewMode) reviewMode.value = "context";
   if (reviewFps) reviewFps.value = "";
   if (reviewWindow) reviewWindow.value = "10";
+  if (contextLimit) contextLimit.value = "8192";
+  if (imageTokenEstimate) imageTokenEstimate.value = "900";
   if (model) model.value = model.value || "olmocr";
   if (command) command.value = "";
   setStatus("olmOCR defaults filled. Paste the exact LM Studio model id if it differs, then Test Local AI and Save.");
@@ -707,6 +723,8 @@ async function testLocalAiConfig() {
     review_mode: document.querySelector("#localAiReviewMode").value,
     review_fps: document.querySelector("#localAiReviewFps").value,
     review_window_seconds: document.querySelector("#localAiReviewWindow").value,
+    context_limit: document.querySelector("#localAiContextLimit").value,
+    image_token_estimate: document.querySelector("#localAiImageTokenEstimate").value,
     model: document.querySelector("#localAiModel").value,
     base_url: document.querySelector("#localAiBaseUrl").value,
     command: document.querySelector("#localAiCommand").value,
@@ -792,6 +810,8 @@ async function saveSetupWizard() {
       local_ai_review_mode: document.querySelector("#localAiReviewMode")?.value || "contact",
       local_ai_review_fps: document.querySelector("#localAiReviewFps")?.value || "",
       local_ai_review_window_seconds: document.querySelector("#localAiReviewWindow")?.value || "10",
+      local_ai_context_limit: document.querySelector("#localAiContextLimit")?.value || "8192",
+      local_ai_image_token_estimate: document.querySelector("#localAiImageTokenEstimate")?.value || "900",
     }),
   });
   els.recordingDir.value = document.querySelector("#setupRecordingDir").value;

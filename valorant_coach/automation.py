@@ -1,6 +1,7 @@
 import json
 import csv
 import base64
+import math
 import platform
 import re
 import shutil
@@ -952,7 +953,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.20.4-local"
+APP_VERSION = "0.20.5-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -963,6 +964,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Cap Clip Coach local-model requests to the configured context window by trimming prompt context and frame count before POST.",
             "Fix Windows cp1252 decode crashes from ffmpeg, Tesseract, git, and custom local-model subprocess output.",
             "Save successful Local AI tests for Clip Coach and log each frame-prep/model-request stage.",
             "Harden Clip Coach against null local-model response fields and log full server tracebacks for failed API calls.",
@@ -1633,6 +1635,8 @@ def local_ai_status(db: Database) -> Dict[str, Any]:
     review_mode = str(db.get_setting("local_ai_review_mode", "contact") or "contact").strip()
     review_fps = str(db.get_setting("local_ai_review_fps", "") or "").strip()
     review_window_seconds = normalize_review_window_setting(db.get_setting("local_ai_review_window_seconds", "10"))
+    context_limit = normalize_context_limit_setting(db.get_setting("local_ai_context_limit", "8192"))
+    image_token_estimate = normalize_image_token_estimate_setting(db.get_setting("local_ai_image_token_estimate", "900"))
     sequence_profile = local_ai_sequence_profile(review_mode, review_fps, review_window_seconds)
     enabled = bool(command) if provider == "custom-command" else bool(base_url and model)
     return {
@@ -1647,6 +1651,8 @@ def local_ai_status(db: Database) -> Dict[str, Any]:
         "review_mode_label": sequence_profile["label"],
         "review_fps": review_fps,
         "review_window_seconds": review_window_seconds,
+        "context_limit": context_limit,
+        "image_token_estimate": image_token_estimate,
         "review_frame_limit": sequence_profile["limit"],
         "status": "configured" if enabled else "disabled",
         "expected_protocol": "custom command uses stdin JSON/stdout JSON; HTTP providers use local-only JSON requests",
@@ -1667,6 +1673,8 @@ def save_local_ai_config(db: Database, payload: Dict[str, Any]) -> Dict[str, Any
     model = str(payload.get("model") or default_model(provider)).strip()
     review_fps = normalize_review_fps_setting(payload.get("review_fps"))
     review_window_seconds = normalize_review_window_setting(payload.get("review_window_seconds"))
+    context_limit = normalize_context_limit_setting(payload.get("context_limit"))
+    image_token_estimate = normalize_image_token_estimate_setting(payload.get("image_token_estimate"))
     review_mode = local_ai_sequence_profile(str(payload.get("review_mode") or "contact"), review_fps, review_window_seconds)["id"]
     db.set_setting("local_ai_provider", provider)
     db.set_setting("local_ai_purpose", purpose)
@@ -1676,7 +1684,9 @@ def save_local_ai_config(db: Database, payload: Dict[str, Any]) -> Dict[str, Any
     db.set_setting("local_ai_review_mode", review_mode)
     db.set_setting("local_ai_review_fps", review_fps)
     db.set_setting("local_ai_review_window_seconds", review_window_seconds)
-    db.log("info", "local-ai", "Updated local AI configuration", {"provider": provider, "purpose": purpose, "review_mode": review_mode, "review_fps": review_fps, "review_window_seconds": review_window_seconds, "configured": bool(command or base_url)})
+    db.set_setting("local_ai_context_limit", context_limit)
+    db.set_setting("local_ai_image_token_estimate", image_token_estimate)
+    db.log("info", "local-ai", "Updated local AI configuration", {"provider": provider, "purpose": purpose, "review_mode": review_mode, "review_fps": review_fps, "review_window_seconds": review_window_seconds, "context_limit": context_limit, "image_token_estimate": image_token_estimate, "configured": bool(command or base_url)})
     return {"ok": True, "local_ai": local_ai_status(db)}
 
 
@@ -1702,6 +1712,26 @@ def normalize_review_window_setting(value: Any) -> str:
     return str(max(5, min(20, number)))
 
 
+def normalize_context_limit_setting(value: Any) -> str:
+    if value is None or value == "":
+        return "8192"
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return "8192"
+    return str(max(4096, min(131072, number)))
+
+
+def normalize_image_token_estimate_setting(value: Any) -> str:
+    if value is None or value == "":
+        return "900"
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return "900"
+    return str(max(256, min(4096, number)))
+
+
 def test_local_ai_connection(db: Database, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     payload = payload or {}
     if payload:
@@ -1712,6 +1742,8 @@ def test_local_ai_connection(db: Database, payload: Optional[Dict[str, Any]] = N
             "review_mode": local_ai_sequence_profile(str(payload.get("review_mode") or "contact"), payload.get("review_fps"), payload.get("review_window_seconds"))["id"],
             "review_fps": normalize_review_fps_setting(payload.get("review_fps")),
             "review_window_seconds": normalize_review_window_setting(payload.get("review_window_seconds")),
+            "context_limit": normalize_context_limit_setting(payload.get("context_limit")),
+            "image_token_estimate": normalize_image_token_estimate_setting(payload.get("image_token_estimate")),
             "command": str(payload.get("command") or "").strip(),
             "base_url": str(payload.get("base_url") or default_base_url(provider)).strip(),
             "model": str(payload.get("model") or "").strip(),
@@ -2630,6 +2662,96 @@ def run_custom_model_text(status: Dict[str, Any], request: Dict[str, Any], timeo
     return completed.stdout or "{}"
 
 
+def budget_local_model_payload(
+    payload: Dict[str, Any],
+    status: Dict[str, Any],
+    system_prompt: str,
+    max_tokens: int,
+    stage: str,
+) -> tuple:
+    context_limit = int(normalize_context_limit_setting(status.get("context_limit")))
+    image_cost = int(normalize_image_token_estimate_setting(status.get("image_token_estimate")))
+    output_reserve = max(256, int(max_tokens or 0))
+    safety_reserve = 512
+    usable = max(512, context_limit - output_reserve - safety_reserve)
+    prompt = str(payload.get("prompt") or "")
+    frames = list(payload.get("keyframes") or [])
+    max_prompt_tokens = min(3200, max(900, int(usable * 0.48)))
+    prompt = compact_text_for_token_budget(prompt, max_prompt_tokens)
+    caption_tokens = estimate_text_tokens("\n".join(str(item.get("caption") or "") for item in frames))
+    fixed_tokens = estimate_text_tokens(system_prompt) + estimate_text_tokens(prompt) + caption_tokens
+    remaining = usable - fixed_tokens
+    if frames:
+        max_frames = max(1, remaining // max(1, image_cost))
+        budgeted_frames = select_frames_for_context_budget(frames, int(max_frames), stage)
+    else:
+        max_frames = 0
+        budgeted_frames = []
+    budgeted = dict(payload)
+    budgeted["prompt"] = prompt
+    budgeted["keyframes"] = budgeted_frames
+    budget = {
+        "context_limit": context_limit,
+        "max_tokens": max_tokens,
+        "safety_reserve": safety_reserve,
+        "usable_input_tokens": usable,
+        "estimated_text_tokens": estimate_text_tokens(system_prompt) + estimate_text_tokens(prompt),
+        "estimated_caption_tokens": caption_tokens,
+        "image_token_estimate": image_cost,
+        "original_frames": len(frames),
+        "sent_frames": len(budgeted_frames),
+        "estimated_total_tokens": estimate_text_tokens(system_prompt) + estimate_text_tokens(prompt) + estimate_text_tokens("\n".join(str(item.get("caption") or "") for item in budgeted_frames)) + len(budgeted_frames) * image_cost + output_reserve + safety_reserve,
+        "stage": stage,
+        "trimmed": len(budgeted_frames) < len(frames) or prompt != str(payload.get("prompt") or ""),
+    }
+    return budgeted, budget
+
+
+def estimate_text_tokens(text: Any) -> int:
+    value = str(text or "")
+    if not value:
+        return 0
+    return max(1, math.ceil(len(value) / 4))
+
+
+def compact_text_for_token_budget(text: str, max_tokens: int) -> str:
+    value = str(text or "")
+    max_chars = max(400, int(max_tokens) * 4)
+    if len(value) <= max_chars:
+        return value
+    head_chars = int(max_chars * 0.62)
+    tail_chars = max_chars - head_chars - 160
+    return (
+        value[:head_chars].rstrip()
+        + "\n\n[Context trimmed to fit the local model context window. Use visible frame evidence over omitted prompt context.]\n\n"
+        + value[-tail_chars:].lstrip()
+    )
+
+
+def select_frames_for_context_budget(frames: List[Dict[str, Any]], limit: int, stage: str) -> List[Dict[str, Any]]:
+    if limit >= len(frames):
+        return frames
+    if limit <= 0:
+        return []
+    if limit == 1:
+        return [frames[-1]]
+    stage_text = str(stage or "").lower()
+    if any(token in stage_text for token in ("contact", "review", "coach", "death")):
+        return frames[-limit:]
+    if limit <= 4:
+        picks = [0, len(frames) // 2, len(frames) - 1]
+        unique = []
+        for index in picks:
+            if index not in unique:
+                unique.append(index)
+        return [frames[index] for index in unique[:limit]]
+    step = max(1, len(frames) // limit)
+    selected = frames[::step][: limit - 1]
+    if frames[-1] not in selected:
+        selected.append(frames[-1])
+    return selected[:limit]
+
+
 def run_local_http_text(
     payload: Dict[str, Any],
     status: Dict[str, Any],
@@ -2638,6 +2760,7 @@ def run_local_http_text(
     timeout: int = 180,
 ) -> str:
     provider = status["provider"]
+    payload, budget = budget_local_model_payload(payload, status, system_prompt, max_tokens, "context_extraction")
     images = [item["image_base64"] for item in payload.get("keyframes") or [] if item.get("image_base64")]
     prompt = payload["prompt"]
     if provider == "ollama":
@@ -3253,6 +3376,8 @@ def synthesize_multipass_reviews(
         + json.dumps(compact, indent=2)
     )
     provider = status["provider"]
+    synthesis_budget = max(900, int(normalize_context_limit_setting(status.get("context_limit"))) - 900 - 512)
+    prompt = compact_text_for_token_budget(prompt, synthesis_budget)
     try:
         if provider == "ollama":
             endpoint = status["base_url"].rstrip("/") + "/api/generate"
@@ -3289,6 +3414,7 @@ def synthesize_multipass_reviews(
 
 def run_local_http_review_single(db: Database, death_id: int, payload: Dict[str, Any], status: Dict[str, Any], save: bool = True) -> Dict[str, Any]:
     provider = status["provider"]
+    payload, budget = budget_local_model_payload(payload, status, local_model_system_prompt(status), 900, "clip_review")
     images = [item["image_base64"] for item in payload.get("keyframes") or [] if item.get("image_base64")]
     prompt = payload["prompt"]
     if provider == "ollama":
@@ -3319,7 +3445,7 @@ def run_local_http_review_single(db: Database, death_id: int, payload: Dict[str,
             "info",
             "local-ai",
             f"Clip Coach POST to {provider}.",
-            {"endpoint": endpoint, "model": status.get("model"), "frame_count": len(payload.get("keyframes") or []), "image_count": len(images)},
+            {"endpoint": endpoint, "model": status.get("model"), "frame_count": len(payload.get("keyframes") or []), "image_count": len(images), "budget": budget},
         )
         response = post_json(endpoint, body, timeout=240)
     except Exception as exc:
@@ -3397,6 +3523,8 @@ def synthesize_batched_reviews(
 ) -> Dict[str, Any]:
     provider = status["provider"]
     prompt = render_batch_synthesis_prompt(payload["prompt"], chunk_reviews)
+    synthesis_budget = max(900, int(normalize_context_limit_setting(status.get("context_limit"))) - 900 - 512)
+    prompt = compact_text_for_token_budget(prompt, synthesis_budget)
     if provider == "ollama":
         endpoint = status["base_url"].rstrip("/") + "/api/generate"
         body = {"model": status["model"], "prompt": local_model_system_prompt(status) + "\n\n" + prompt, "stream": False}
@@ -4438,7 +4566,7 @@ def save_setup_wizard(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
     for key in ("recording_dir", "player_name", "auto_import", "auto_analysis", "frame_sample_rate", "detector_sensitivity", "enemy_detector_command"):
         if key in payload:
             db.set_setting(key, str(payload.get(key) or ""))
-    if any(key in payload for key in ("local_ai_provider", "local_ai_command", "local_ai_base_url", "local_ai_model", "local_ai_review_mode", "local_ai_review_fps", "local_ai_review_window_seconds")):
+    if any(key in payload for key in ("local_ai_provider", "local_ai_command", "local_ai_base_url", "local_ai_model", "local_ai_review_mode", "local_ai_review_fps", "local_ai_review_window_seconds", "local_ai_context_limit", "local_ai_image_token_estimate")):
         save_local_ai_config(
             db,
             {
@@ -4449,6 +4577,8 @@ def save_setup_wizard(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
                 "review_mode": payload.get("local_ai_review_mode"),
                 "review_fps": payload.get("local_ai_review_fps"),
                 "review_window_seconds": payload.get("local_ai_review_window_seconds"),
+                "context_limit": payload.get("local_ai_context_limit"),
+                "image_token_estimate": payload.get("local_ai_image_token_estimate"),
             },
         )
     db.set_setting("setup_completed", "true")
