@@ -69,7 +69,7 @@ def extract_death_clips(
             "copy",
             str(output),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode == 0 and output.exists():
             db.update_death_clip(death["id"], str(output.resolve()))
             created += 1

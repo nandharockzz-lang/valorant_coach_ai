@@ -135,7 +135,7 @@ def extract_scan_frames(ffmpeg: str, video_path: Path, frame_dir: Path, fps: str
         "4",
         output_pattern,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "ffmpeg frame extraction failed")
     return sorted(frame_dir.glob("scan-*.jpg"))
@@ -539,7 +539,7 @@ def tesseract_path() -> str:
 
 def run_tesseract_text(tesseract: str, image_path: Path, psm: str = "6") -> str:
     cmd = [tesseract, str(image_path), "stdout", "--psm", psm]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         return ""
     return " ".join(result.stdout.split())
@@ -1259,7 +1259,7 @@ def extract_sequence_frames(ffmpeg: str, source: Path, frame_dir: Path, start: f
         "5",
         output_pattern,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "ffmpeg local AI sequence extraction failed")
     return sorted(frame_dir.glob("sequence-*.jpg"))
@@ -1277,7 +1277,7 @@ def extract_keyframe_source(ffmpeg: str, source: Path, frame_dir: Path, timestam
     if timestamp is not None:
         cmd.extend(["-t", "16"])
     cmd.extend(["-vf", "fps=2,scale=640:-1", "-q:v", "4", output_pattern])
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "ffmpeg keyframe extraction failed")
     return sorted(frame_dir.glob("scan-*.jpg"))

@@ -952,7 +952,7 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.20.3-local"
+APP_VERSION = "0.20.4-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -963,6 +963,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Fix Windows cp1252 decode crashes from ffmpeg, Tesseract, git, and custom local-model subprocess output.",
             "Save successful Local AI tests for Clip Coach and log each frame-prep/model-request stage.",
             "Harden Clip Coach against null local-model response fields and log full server tracebacks for failed API calls.",
             "Show whether the player-name killfeed/combat-report death detector ran, including OCR availability and fallback counts.",
@@ -1023,6 +1024,8 @@ def git_version_info() -> Dict[str, Any]:
             cwd=str(root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=3,
         )
         if completed.returncode != 0:
@@ -1831,6 +1834,8 @@ def run_local_ai_review(db: Database, death_id: int) -> Dict[str, Any]:
             input=json.dumps(request),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             shell=True,
             timeout=90,
         )
@@ -2110,7 +2115,7 @@ def run_external_enemy_detector(frame_path: Optional[Path], detector_profile: Di
     path = str(frame_path)
     command_line = command.replace("{image}", path) if "{image}" in command else f'{command} "{path}"'
     try:
-        completed = subprocess.run(command_line, capture_output=True, text=True, shell=True, timeout=8)
+        completed = subprocess.run(command_line, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=True, timeout=8)
     except Exception as exc:
         return {"available": True, "visible": False, "confidence": 0.0, "error": str(exc)}
     if completed.returncode != 0:
@@ -2615,6 +2620,8 @@ def run_custom_model_text(status: Dict[str, Any], request: Dict[str, Any], timeo
         input=json.dumps(request),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         shell=True,
         timeout=timeout,
     )

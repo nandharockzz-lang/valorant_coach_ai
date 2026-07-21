@@ -246,7 +246,7 @@ def sample_match_frames(db: Database, match_id: int, work_dir: Path, fps: str) -
         "4",
         str(frame_dir / "sample-%06d.jpg"),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         return {"ok": False, "message": result.stderr.strip() or "ffmpeg frame extraction failed.", "analysis": None}
     return sorted(frame_dir.glob("sample-*.jpg"))
@@ -331,7 +331,7 @@ def extract_single_frame(ffmpeg: str, video_path: Path, timestamp: float, output
         "3",
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return result.returncode == 0 and output_path.exists()
 
 
@@ -496,7 +496,7 @@ def run_tesseract_digits(tesseract: str, image_path: Path) -> str:
         "-c",
         "tessedit_char_whitelist=0123456789",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         return ""
     return "".join(result.stdout.split())
@@ -562,7 +562,7 @@ def tesseract_path() -> str:
 
 def run_tesseract(tesseract: str, image_path: Path) -> str:
     cmd = [tesseract, str(image_path), "stdout", "--psm", "6"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         return ""
     return " ".join(result.stdout.split())
