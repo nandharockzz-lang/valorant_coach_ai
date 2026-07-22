@@ -130,7 +130,7 @@ async function loadAutomation() {
   const detectorCandidatePath = currentMatchId
     ? `/api/detector/candidates?match_id=${encodeURIComponent(currentMatchId)}`
     : "/api/detector/candidates";
-  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorDashboard, detectorCandidates, signals] = await Promise.all([
+  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorDashboard, detectorCandidates, signals, parametersDashboard] = await Promise.all([
     api("/api/settings"),
     api("/api/jobs"),
     api("/api/watcher"),
@@ -159,6 +159,7 @@ async function loadAutomation() {
     api("/api/detector/dashboard"),
     api(detectorCandidatePath),
     api("/api/signals"),
+    api("/api/parameters/dashboard"),
   ]);
   renderAutomation(
     settings,
@@ -188,13 +189,14 @@ async function loadAutomation() {
     detectorStatus,
     detectorDashboard,
     detectorCandidates,
-    signals
+    signals,
+    parametersDashboard
   );
   latestJobs = jobs.jobs || [];
   renderJobProgressPanel();
 }
 
-function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorDashboard, detectorCandidates, signals) {
+function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorDashboard, detectorCandidates, signals, parametersDashboard) {
   const jobRows = jobs.slice(0, 8).map((job) => `
     <li>
       <strong>#${job.id} ${escapeHtml(job.name)}</strong>
@@ -414,6 +416,7 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
       <p class="muted">Current ${escapeHtml(tuning.current || "normal")} · recommended ${escapeHtml(tuning.recommended || "normal")}</p>
       <button class="secondary" data-action="apply-detector-tuning">Apply Tuning</button>
     </div>
+    ${renderParameterTrainer(parametersDashboard || {})}
     ${renderTrainedDetectorPanel(detectorStatus || {}, detectorDashboard || {}, detectorCandidates || {}, signals || {})}
     <div class="automation-block">
       <h3>Backups</h3>
@@ -533,6 +536,84 @@ function renderAnalyticsBars(analytics) {
       </div>
     `;
   }).join("") || '<p class="muted">No trend bars yet.</p>';
+}
+
+function renderParameterTrainer(dashboard) {
+  const parameters = dashboard.parameters || [];
+  const readiness = Math.max(0, Math.min(100, Number(dashboard.readiness_percent || 0)));
+  const gapRows = (dashboard.gaps || []).slice(0, 6).map((gap) => `
+    <li><strong>${escapeHtml(gap.label || gap.parameter_key || "Parameter")}</strong> <span class="muted">${escapeHtml(gap.status || "")} · ${escapeHtml(gap.detail || "")}</span></li>
+  `).join("");
+  const rows = parameters.map((parameter) => renderParameterCard(parameter)).join("");
+  return `
+    <div class="automation-block parameter-trainer">
+      <div class="detector-dashboard-head">
+        <div>
+          <h3>Parameter Trainer</h3>
+          <p>${escapeHtml(dashboard.summary || "Configure and train calculated HUD/OCR values.")}</p>
+        </div>
+        <div class="detector-readiness" aria-label="Parameter trainer readiness">
+          <strong>${escapeHtml(readiness)}%</strong>
+          <span>trained</span>
+        </div>
+      </div>
+      <div class="detector-readiness-bar">${renderMiniProgress(readiness)}</div>
+      <div class="parameter-live-controls">
+        <label>Match ID <input id="parameterMatchId" type="number" min="1" value="${escapeAttr(currentMatchId || "")}" placeholder="Open a match" /></label>
+        <label>Timestamp <input id="parameterTimestamp" type="text" placeholder="Current video time or 1:23" /></label>
+        <button data-action="extract-parameters">Read Current Frame</button>
+        <button class="secondary" data-action="refresh-parameters">Refresh</button>
+      </div>
+      <p class="muted">Each parameter shows the extracted value, raw OCR text, confidence, linked dependencies, and saved labels. Correct bad reads here instead of asking for new hardcoded parser changes.</p>
+      <details class="advanced-actions" open>
+        <summary>Training gaps</summary>
+        <ul class="compact-list">${gapRows || "<li>No major parameter gaps currently reported.</li>"}</ul>
+      </details>
+      <div id="parameterExtractResult" class="parameter-extract-result"></div>
+      <div class="parameter-grid">${rows || '<p class="muted">No parameters registered.</p>'}</div>
+    </div>
+  `;
+}
+
+function renderParameterCard(parameter) {
+  const read = parameter.latest_read || {};
+  const value = read.value !== null && read.value !== undefined && read.value !== "" ? read.value : "unknown";
+  const confidence = Math.round(Number(read.confidence || 0) * 100);
+  const configJson = JSON.stringify(parameter.config || {}, null, 2);
+  const deps = (parameter.dependencies || []).join(" + ");
+  return `
+    <article class="parameter-card ${escapeAttr(parameter.status || "")}">
+      <div class="parameter-card-head">
+        <div>
+          <strong>${escapeHtml(parameter.label || parameter.parameter_key)}</strong>
+          <span class="muted">${escapeHtml(parameter.parameter_key || "")}</span>
+        </div>
+        <span class="tag">${escapeHtml(parameter.status || "unknown")}</span>
+      </div>
+      <div class="parameter-value-row">
+        <span>Value</span>
+        <strong>${escapeHtml(value)}</strong>
+        <span>${escapeHtml(confidence)}%</span>
+      </div>
+      <p class="muted">${escapeHtml(parameter.description || "")}</p>
+      <p class="muted">Source ${escapeHtml(parameter.source_region || "none")} · ${escapeHtml(parameter.extractor_type || "unknown")}${deps ? ` · depends on ${escapeHtml(deps)}` : ""}</p>
+      ${read.raw_text ? `<pre class="parameter-raw">${escapeHtml(shortenText(read.raw_text, 180))}</pre>` : `<p class="muted">No raw read yet.</p>`}
+      <div class="parameter-label-row">
+        <label>Expected <input data-parameter-expected="${escapeAttr(parameter.parameter_key)}" type="text" placeholder="Correct value" /></label>
+        <button class="secondary" data-action="save-parameter-label" data-key="${escapeAttr(parameter.parameter_key)}" data-read-id="${escapeAttr(read.id || "")}" data-observed="${escapeAttr(read.value ?? "")}" data-match="${escapeAttr(read.match_id || currentMatchId || "")}" data-ts="${escapeAttr(read.timestamp ?? "")}" data-frame="${escapeAttr(read.frame_id || "")}">Save Label</button>
+      </div>
+      <p class="muted">${escapeHtml(parameter.label_count || 0)} label(s) · accuracy ${parameter.accuracy === null || parameter.accuracy === undefined ? "n/a" : escapeHtml(Math.round(parameter.accuracy * 100) + "%")}</p>
+      <details class="advanced-actions">
+        <summary>Rule config</summary>
+        <label>Label <input data-parameter-label="${escapeAttr(parameter.parameter_key)}" type="text" value="${escapeAttr(parameter.label || "")}" /></label>
+        <label>Region <input data-parameter-region="${escapeAttr(parameter.parameter_key)}" type="text" value="${escapeAttr(parameter.source_region || "")}" /></label>
+        <label>Extractor <input data-parameter-extractor="${escapeAttr(parameter.parameter_key)}" type="text" value="${escapeAttr(parameter.extractor_type || "")}" /></label>
+        <label>Dependencies <input data-parameter-deps="${escapeAttr(parameter.parameter_key)}" type="text" value="${escapeAttr((parameter.dependencies || []).join(","))}" placeholder="round_score_left,round_score_right" /></label>
+        <label>Config JSON <textarea data-parameter-config="${escapeAttr(parameter.parameter_key)}" rows="6">${escapeHtml(configJson)}</textarea></label>
+        <button data-action="save-parameter-config" data-key="${escapeAttr(parameter.parameter_key)}">Save Rule</button>
+      </details>
+    </article>
+  `;
 }
 
 function renderTrainedDetectorPanel(detector, dashboard, candidates, signals) {
@@ -677,6 +758,103 @@ async function saveAutomationSettings() {
     }),
   });
   setStatus("Automation settings saved.");
+  await loadAutomation();
+}
+
+async function extractParameters() {
+  const matchId = document.querySelector("#parameterMatchId")?.value || currentMatchId;
+  if (!matchId) {
+    setStatus("Open a match or enter a match ID first.", { state: "error" });
+    return;
+  }
+  const player = document.querySelector("#vodPlayer");
+  const rawTimestamp = (document.querySelector("#parameterTimestamp")?.value || "").trim();
+  const timestamp = rawTimestamp ? parseTimeInput(rawTimestamp) : (player ? player.currentTime : 60);
+  const mount = document.querySelector("#parameterExtractResult");
+  if (mount) mount.innerHTML = '<p class="muted"><span class="status-spinner" aria-hidden="true"></span> Capturing frame and reading configured parameters...</p>';
+  setStatus("Reading configured parameters...", { state: "busy" });
+  const payload = await api(`/api/matches/${matchId}/parameters/extract`, {
+    method: "POST",
+    body: JSON.stringify({ timestamp }),
+  });
+  if (mount) mount.innerHTML = renderParameterExtractResult(payload);
+  setStatus(payload.message || "Parameter extraction complete.");
+  await loadAutomation();
+}
+
+function renderParameterExtractResult(payload) {
+  const rows = (payload.reads || []).map((read) => `
+    <tr>
+      <td>${escapeHtml(read.parameter_key || "")}</td>
+      <td>${escapeHtml(read.value ?? "unknown")}</td>
+      <td>${escapeHtml(read.status || "")}</td>
+      <td>${escapeHtml(Math.round(Number(read.confidence || 0) * 100))}%</td>
+    </tr>
+  `).join("");
+  return `
+    <div class="parameter-live-result">
+      <div class="review-head">
+        <strong>Live read at ${escapeHtml(formatTs(payload.timestamp || 0))}</strong>
+        <span class="muted">${escapeHtml(payload.frame_id || "")}</span>
+      </div>
+      ${payload.frame_id ? `<img src="/api/vision/frame/${escapeAttr(payload.frame_id)}" alt="Parameter trainer frame" />` : ""}
+      <table class="mini-table">
+        <thead><tr><th>Parameter</th><th>Value</th><th>Status</th><th>Confidence</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function saveParameterLabel(button) {
+  const key = button.dataset.key;
+  const expected = document.querySelector(`[data-parameter-expected="${CSS.escape(key)}"]`)?.value || "";
+  if (!expected.trim()) {
+    setStatus("Enter the expected value before saving a parameter label.", { state: "error" });
+    return;
+  }
+  await api("/api/parameter-labels", {
+    method: "POST",
+    body: JSON.stringify({
+      parameter_key: key,
+      expected_value: expected,
+      observed_value: button.dataset.observed || "",
+      read_id: button.dataset.readId || null,
+      match_id: button.dataset.match || currentMatchId || null,
+      timestamp: button.dataset.ts || null,
+      frame_id: button.dataset.frame || "",
+    }),
+  });
+  setStatus(`Saved ${key} label.`);
+  await loadAutomation();
+}
+
+async function saveParameterConfig(button) {
+  const key = button.dataset.key;
+  const configText = document.querySelector(`[data-parameter-config="${CSS.escape(key)}"]`)?.value || "{}";
+  let config = {};
+  try {
+    config = JSON.parse(configText);
+  } catch (err) {
+    setStatus(`Invalid JSON config for ${key}.`, { state: "error" });
+    return;
+  }
+  const dependencies = (document.querySelector(`[data-parameter-deps="${CSS.escape(key)}"]`)?.value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  await api(`/api/parameters/${encodeURIComponent(key)}`, {
+    method: "POST",
+    body: JSON.stringify({
+      label: document.querySelector(`[data-parameter-label="${CSS.escape(key)}"]`)?.value || key,
+      source_region: document.querySelector(`[data-parameter-region="${CSS.escape(key)}"]`)?.value || "",
+      extractor_type: document.querySelector(`[data-parameter-extractor="${CSS.escape(key)}"]`)?.value || "ocr_regex",
+      dependencies,
+      config,
+      enabled: true,
+    }),
+  });
+  setStatus(`Saved ${key} rule.`);
   await loadAutomation();
 }
 
@@ -4180,6 +4358,10 @@ els.automationView.addEventListener("click", (event) => {
   if (action === "load-prompt") loadPromptEditor();
   if (action === "save-prompt") savePromptTemplate().catch((err) => setStatus(err.message));
   if (action === "apply-detector-tuning") applyDetectorTuning().catch((err) => setStatus(err.message));
+  if (action === "extract-parameters") extractParameters().catch((err) => setStatus(err.message));
+  if (action === "refresh-parameters") loadAutomation().then(() => setStatus("Parameter trainer refreshed.")).catch((err) => setStatus(err.message));
+  if (action === "save-parameter-label") saveParameterLabel(button).catch((err) => setStatus(err.message));
+  if (action === "save-parameter-config") saveParameterConfig(button).catch((err) => setStatus(err.message));
   if (action === "build-detector-candidates") buildDetectorCandidates().catch((err) => setStatus(err.message));
   if (action === "prelabel-detector-candidates") prelabelDetectorCandidates().catch((err) => setStatus(err.message));
   if (action === "evaluate-detector") evaluateDetector().catch((err) => setStatus(err.message));

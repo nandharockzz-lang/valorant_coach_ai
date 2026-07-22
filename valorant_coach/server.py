@@ -100,6 +100,13 @@ from .deep_analysis import (
     tesseract_path,
 )
 from .knowledge import knowledge_status, prompt_preview, rebuild_knowledge_base, search_knowledge
+from .parameters import (
+    extract_match_parameters,
+    list_parameters,
+    parameter_dashboard,
+    save_parameter_label,
+    update_parameter_definition,
+)
 from .reports import build_report, save_death_context_correction, write_markdown_report
 from .signals import signal_registry
 from .vision import (
@@ -224,6 +231,10 @@ class CoachHandler(BaseHTTPRequestHandler):
             self.json_response(DB.schema_info())
         elif parsed.path == "/api/signals":
             self.json_response(signal_registry())
+        elif parsed.path == "/api/parameters":
+            self.json_response(list_parameters(DB))
+        elif parsed.path == "/api/parameters/dashboard":
+            self.json_response(parameter_dashboard(DB))
         elif parsed.path == "/api/watcher":
             self.json_response({"watcher": WATCHER.status(), "settings": self.settings_payload()})
         elif parsed.path == "/api/storage":
@@ -376,6 +387,11 @@ class CoachHandler(BaseHTTPRequestHandler):
                 self.json_response(apply_correction(DB, correction_id))
             elif parsed.path == "/api/playbooks":
                 self.json_response(save_playbook(DB, self.read_json()))
+            elif parsed.path == "/api/parameter-labels":
+                self.json_response(save_parameter_label(DB, self.read_json()))
+            elif parsed.path.startswith("/api/parameters/"):
+                parameter_key = unquote(parsed.path.split("/")[3])
+                self.json_response(update_parameter_definition(DB, parameter_key, self.read_json()))
             elif parsed.path == "/api/search/deaths":
                 self.json_response(search_deaths(DB, self.read_json()))
             elif parsed.path == "/api/search/advanced":
@@ -509,6 +525,9 @@ class CoachHandler(BaseHTTPRequestHandler):
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/ocr-health"):
                 match_id = int(parsed.path.split("/")[3])
                 self.json_response(ocr_health_check(DB, match_id, DEEP_DIR, self.read_json()))
+            elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/parameters/extract"):
+                match_id = int(parsed.path.split("/")[3])
+                self.json_response(extract_match_parameters(DB, match_id, DEEP_DIR, self.read_json()))
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/scoreboard-rounds"):
                 match_id = int(parsed.path.split("/")[3])
                 self.json_response(infer_rounds_from_scoreboard(DB, match_id, DEEP_DIR))

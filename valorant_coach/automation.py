@@ -1300,7 +1300,7 @@ def read_round_score_health(tesseract: str, image: Image.Image, frame_path: Path
     }
 
 
-APP_VERSION = "0.27.0-local"
+APP_VERSION = "0.28.0-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -1311,6 +1311,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Add Runtime Parameter Trainer with configurable OCR/HUD signal definitions, live reads, labels, dependency formulas, and readiness tracking.",
             "Replace confusing OCR Health UI with a full-frame OCR region setup, draggable boxes, friendly labels, and calibration reset.",
             "Document UI/UX architecture and recluster the match review page into Deaths, Coach, Player Status, and Diagnostics tabs.",
             "Add trust evidence receipts, marker lifecycle badges, OCR health checks, clear-unreviewed suggestions, and round-unknown reason text.",

@@ -120,6 +120,18 @@ Current flow:
 - Detector training data is built from user-labeled imported clips and exported in YOLO format.
 - Clip Coach must keep detector evidence separate from local VLM evidence and deterministic proxy evidence.
 
+### ADR-009: Runtime Parameter Trainer
+
+**Decision:** OCR/HUD-derived gameplay context is represented as runtime-configurable parameter definitions, not hardcoded parser assumptions.
+
+**Rationale:** The user should be able to see what values are calculated, where they come from, how values depend on each other, and correct bad reads without waiting for a code change. OCR is evidence, not truth.
+
+**Implications:**
+- Each parameter stores source region, extractor type, parser config, dependencies, latest read, confidence, and labels.
+- Round number is derived from left score plus right score plus one; the top HUD timer is parsed as a separate signal.
+- Parameter labels are stored locally and power readiness/accuracy reporting.
+- Future vision/VLM parameters should reuse the same definition/read/label model instead of creating separate opaque dashboards.
+
 ## Skill Usage
 
 - Use `senior-architect` when making architecture decisions, ADRs, major trade-offs, or system design changes.

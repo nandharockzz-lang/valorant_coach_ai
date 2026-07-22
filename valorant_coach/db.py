@@ -210,6 +210,46 @@ CREATE TABLE IF NOT EXISTS local_playbooks (
     payload TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS parameter_definitions (
+    parameter_key TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    source_region TEXT NOT NULL DEFAULT '',
+    extractor_type TEXT NOT NULL,
+    config TEXT NOT NULL DEFAULT '{}',
+    dependencies TEXT NOT NULL DEFAULT '[]',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS parameter_reads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parameter_key TEXT NOT NULL,
+    match_id INTEGER,
+    timestamp REAL,
+    frame_id TEXT NOT NULL DEFAULT '',
+    value TEXT,
+    raw_text TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0,
+    evidence TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'unknown',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS parameter_labels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parameter_key TEXT NOT NULL,
+    match_id INTEGER,
+    timestamp REAL,
+    frame_id TEXT NOT NULL DEFAULT '',
+    expected_value TEXT NOT NULL,
+    observed_value TEXT NOT NULL DEFAULT '',
+    was_correct INTEGER,
+    read_id INTEGER,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -231,7 +271,7 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO schema_meta(key, value, updated_at)
-                VALUES('schema_version', '2', CURRENT_TIMESTAMP)
+                VALUES('schema_version', '3', CURRENT_TIMESTAMP)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
                 """
             )
@@ -257,9 +297,192 @@ class Database:
             "migrations": [
                 {"id": "0001_initial", "status": "applied", "description": "Base coach schema."},
                 {"id": "0002_jobs_logs_playbooks", "status": "applied", "description": "Persistent jobs, logs, schema metadata, local playbooks."},
+                {"id": "0003_parameter_trainer", "status": "applied", "description": "Runtime parameter definitions, reads, and labels."},
             ],
             "rollback_supported": False,
         }
+
+    def seed_parameter_definitions(self, definitions: List[Dict[str, Any]]) -> None:
+        with self.connect() as conn:
+            for item in definitions:
+                conn.execute(
+                    """
+                    INSERT INTO parameter_definitions(
+                        parameter_key, label, description, source_region, extractor_type,
+                        config, dependencies, enabled, updated_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(parameter_key) DO NOTHING
+                    """,
+                    (
+                        str(item.get("key") or item.get("parameter_key") or ""),
+                        str(item.get("label") or ""),
+                        str(item.get("description") or ""),
+                        str(item.get("source_region") or ""),
+                        str(item.get("extractor_type") or ""),
+                        json.dumps(item.get("config") or {}),
+                        json.dumps(item.get("dependencies") or []),
+                        1 if item.get("enabled", True) else 0,
+                    ),
+                )
+
+    def list_parameter_definitions(self) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM parameter_definitions ORDER BY parameter_key").fetchall()
+        return [self._decode_parameter_definition(row) for row in rows]
+
+    def get_parameter_definition(self, parameter_key: str) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM parameter_definitions WHERE parameter_key = ?", (parameter_key,)).fetchone()
+        return self._decode_parameter_definition(row) if row else None
+
+    def upsert_parameter_definition(self, parameter_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        existing = self.get_parameter_definition(parameter_key) or {}
+        next_item = {
+            "parameter_key": parameter_key,
+            "label": str(payload.get("label", existing.get("label") or parameter_key)),
+            "description": str(payload.get("description", existing.get("description") or "")),
+            "source_region": str(payload.get("source_region", existing.get("source_region") or "")),
+            "extractor_type": str(payload.get("extractor_type", existing.get("extractor_type") or "ocr_regex")),
+            "config": payload.get("config", existing.get("config") or {}),
+            "dependencies": payload.get("dependencies", existing.get("dependencies") or []),
+            "enabled": bool(payload.get("enabled", existing.get("enabled", True))),
+        }
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO parameter_definitions(
+                    parameter_key, label, description, source_region, extractor_type,
+                    config, dependencies, enabled, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(parameter_key) DO UPDATE SET
+                    label = excluded.label,
+                    description = excluded.description,
+                    source_region = excluded.source_region,
+                    extractor_type = excluded.extractor_type,
+                    config = excluded.config,
+                    dependencies = excluded.dependencies,
+                    enabled = excluded.enabled,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    next_item["parameter_key"],
+                    next_item["label"],
+                    next_item["description"],
+                    next_item["source_region"],
+                    next_item["extractor_type"],
+                    json.dumps(next_item["config"] or {}),
+                    json.dumps(next_item["dependencies"] or []),
+                    1 if next_item["enabled"] else 0,
+                ),
+            )
+        return self.get_parameter_definition(parameter_key) or next_item
+
+    def save_parameter_read(self, read: Dict[str, Any]) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO parameter_reads(
+                    parameter_key, match_id, timestamp, frame_id, value, raw_text,
+                    confidence, evidence, status
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(read.get("parameter_key") or ""),
+                    read.get("match_id"),
+                    read.get("timestamp"),
+                    str(read.get("frame_id") or ""),
+                    None if read.get("value") is None else str(read.get("value")),
+                    str(read.get("raw_text") or ""),
+                    float(read.get("confidence") or 0),
+                    json.dumps(read.get("evidence") or {}),
+                    str(read.get("status") or "unknown"),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def latest_parameter_reads(self, limit: int = 500) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM parameter_reads
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._decode_parameter_read(row) for row in rows]
+
+    def get_parameter_read(self, read_id: int) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM parameter_reads WHERE id = ?", (read_id,)).fetchone()
+        return self._decode_parameter_read(row) if row else None
+
+    def save_parameter_label(self, payload: Dict[str, Any]) -> int:
+        expected = str(payload.get("expected_value") or "").strip()
+        observed = str(payload.get("observed_value") or "").strip()
+        read_id = payload.get("read_id")
+        try:
+            read_id = int(read_id) if read_id not in (None, "") else None
+        except (TypeError, ValueError):
+            read_id = None
+        if read_id and not observed:
+            read = self.get_parameter_read(read_id)
+            observed = str((read or {}).get("value") or "").strip()
+        was_correct = None
+        if expected or observed:
+            was_correct = 1 if normalize_compare_value(expected) == normalize_compare_value(observed) else 0
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO parameter_labels(
+                    parameter_key, match_id, timestamp, frame_id, expected_value,
+                    observed_value, was_correct, read_id, note
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(payload.get("parameter_key") or ""),
+                    payload.get("match_id"),
+                    payload.get("timestamp"),
+                    str(payload.get("frame_id") or ""),
+                    expected,
+                    observed,
+                    was_correct,
+                    read_id,
+                    str(payload.get("note") or ""),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_parameter_labels(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM parameter_labels ORDER BY created_at DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _decode_parameter_definition(self, row: Any) -> Dict[str, Any]:
+        item = dict(row)
+        item["key"] = item.get("parameter_key")
+        item["enabled"] = bool(item.get("enabled"))
+        for key, fallback in (("config", {}), ("dependencies", [])):
+            try:
+                item[key] = json.loads(item.get(key) or json.dumps(fallback))
+            except json.JSONDecodeError:
+                item[key] = fallback
+        return item
+
+    def _decode_parameter_read(self, row: Any) -> Dict[str, Any]:
+        item = dict(row)
+        try:
+            item["evidence"] = json.loads(item.get("evidence") or "{}")
+        except json.JSONDecodeError:
+            item["evidence"] = {}
+        return item
 
     def create_job(self, name: str) -> int:
         with self.connect() as conn:
@@ -1247,3 +1470,7 @@ class Database:
 
 def clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
+
+
+def normalize_compare_value(value: Any) -> str:
+    return str(value or "").strip().lower().replace(" ", "")
