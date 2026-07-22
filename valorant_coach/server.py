@@ -668,7 +668,7 @@ class CoachHandler(BaseHTTPRequestHandler):
             else:
                 self.not_found()
         except Exception as exc:
-            DB.add_log("error", "http", str(exc), {"path": parsed.path, "traceback": traceback.format_exc()})
+            DB.log("error", "http", str(exc), {"path": parsed.path, "traceback": traceback.format_exc()})
             self.error_response(500, str(exc))
 
     def do_DELETE(self) -> None:
@@ -687,7 +687,7 @@ class CoachHandler(BaseHTTPRequestHandler):
             else:
                 self.not_found()
         except Exception as exc:
-            DB.add_log("error", "http", str(exc), {"path": parsed.path, "traceback": traceback.format_exc()})
+            DB.log("error", "http", str(exc), {"path": parsed.path, "traceback": traceback.format_exc()})
             self.error_response(500, str(exc))
 
     def handle_match_get(self, path: str) -> None:

@@ -111,6 +111,15 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function optionalApi(path, fallback = {}) {
+  try {
+    return await api(path);
+  } catch (err) {
+    console.warn(`Optional API unavailable: ${path}`, err);
+    return { ok: false, optional_error: err.message, ...fallback };
+  }
+}
+
 async function loadSettings() {
   const payload = await api("/api/settings");
   els.recordingDir.value = payload.recording_dir || "";
@@ -152,14 +161,14 @@ async function loadAutomation() {
     api("/api/knowledge/status"),
     api("/api/setup"),
     api("/api/prompts"),
-    api("/api/detector/tuning"),
-    api("/api/privacy/model-audit"),
-    api("/api/sessions/report"),
-    api("/api/detector/status"),
-    api("/api/detector/dashboard"),
-    api(detectorCandidatePath),
-    api("/api/signals"),
-    api("/api/parameters/dashboard"),
+    optionalApi("/api/detector/tuning", { summary: "Detector tuning unavailable until the server is restarted on the latest build." }),
+    optionalApi("/api/privacy/model-audit", { summary: "Model audit unavailable until the server is restarted on the latest build." }),
+    optionalApi("/api/sessions/report", { report: { summary: "Session report unavailable until the server is restarted on the latest build." } }),
+    optionalApi("/api/detector/status", { summary: "Detector status unavailable until the server is restarted on the latest build.", annotations: {} }),
+    optionalApi("/api/detector/dashboard", { summary: "Detector dashboard unavailable until the server is restarted on the latest build.", readiness_percent: 0, gaps: [] }),
+    optionalApi(detectorCandidatePath, { candidates: [], count: 0 }),
+    optionalApi("/api/signals", { signals: [] }),
+    optionalApi("/api/parameters/dashboard", { summary: "Parameter Trainer unavailable until the server is restarted on the latest build.", readiness_percent: 0, parameters: [], gaps: [] }),
   ]);
   renderAutomation(
     settings,
