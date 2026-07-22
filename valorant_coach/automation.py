@@ -1101,6 +1101,35 @@ def evidence_summary(source: str, gaps: List[str], local_ai: Dict[str, Any], vis
     return " ".join(parts)
 
 
+OCR_HEALTH_REGION_INFO = {
+    "hud_top": {
+        "label": "Top Score / Round HUD",
+        "purpose": "Round score, team score, timer, and top-center match context.",
+        "aliases": {"top_score", "round_score", "top_hud"},
+    },
+    "killfeed": {
+        "label": "Killfeed",
+        "purpose": "Top-right killfeed where player deaths and kills appear briefly.",
+        "aliases": {"kill_feed"},
+    },
+    "combat_report": {
+        "label": "Combat Report",
+        "purpose": "Right-side post-death panel showing damage dealt and received.",
+        "aliases": {"damage_report"},
+    },
+    "hud_bottom": {
+        "label": "Bottom HUD",
+        "purpose": "Health, weapon, ammo, and ability HUD near the bottom of the screen.",
+        "aliases": {"bottom_hud"},
+    },
+    "minimap": {
+        "label": "Minimap",
+        "purpose": "Top-left minimap used for spacing and teammate context.",
+        "aliases": set(),
+    },
+}
+
+
 def ocr_health_check(db: Database, match_id: int, work_dir: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
     match = db.get_match(match_id)
     if not match:
@@ -1113,7 +1142,7 @@ def ocr_health_check(db: Database, match_id: int, work_dir: Path, payload: Dict[
         return {"ok": False, "message": "ffmpeg is required to extract an OCR health frame.", "status": "missing_tool"}
 
     timestamp = parse_health_timestamp(payload, db.get_deaths(match_id))
-    regions = payload.get("regions") or ["killfeed", "combat_report", "hud_top", "hud_bottom", "round_score"]
+    regions = ocr_health_region_names(payload.get("regions"))
     if isinstance(regions, str):
         regions = [item.strip() for item in regions.split(",") if item.strip()]
     frame_dir = work_dir / "ocr-health" / f"match-{match_id}"
@@ -1130,12 +1159,17 @@ def ocr_health_check(db: Database, match_id: int, work_dir: Path, payload: Dict[
     results = []
     for region_name in regions:
         name = str(region_name)
-        if name == "round_score":
-            results.append(read_round_score_health(tesseract, image, frame_path, frame_dir, frame_id))
-            continue
         region = calibration.get(name)
         if not region:
-            results.append({"region": name, "status": "missing_calibration", "message": "No calibration region exists."})
+            results.append(
+                {
+                    "region": name,
+                    **ocr_health_region_metadata(name),
+                    "status": "missing_calibration",
+                    "message": "No calibration region exists.",
+                    "box": None,
+                }
+            )
             continue
         crop_arr = crop_region(arr, region)
         crop_image = Image.fromarray(np.clip(crop_arr * 255, 0, 255).astype(np.uint8))
@@ -1146,10 +1180,12 @@ def ocr_health_check(db: Database, match_id: int, work_dir: Path, payload: Dict[
             results.append(
                 {
                     "region": name,
+                    **ocr_health_region_metadata(name),
                     "status": "missing_tool",
                     "message": "Tesseract OCR is not installed or not on PATH.",
                     "frame_id": crop_id,
                     "crop_path": str(crop_path),
+                    "box": dict(region),
                     "text": "",
                 }
             )
@@ -1160,10 +1196,12 @@ def ocr_health_check(db: Database, match_id: int, work_dir: Path, payload: Dict[
         results.append(
             {
                 "region": name,
+                **ocr_health_region_metadata(name),
                 "status": "readable" if text else "unreadable",
                 "message": "OCR text found." if text else "Crop extracted but OCR returned no text.",
                 "frame_id": crop_id,
                 "crop_path": str(crop_path),
+                "box": dict(region),
                 "text": text,
                 "kind": classify_ocr_region_text(name, text),
             }
@@ -1174,15 +1212,49 @@ def ocr_health_check(db: Database, match_id: int, work_dir: Path, payload: Dict[
         "kind": "ocr_health",
         "timestamp": timestamp,
         "frame_id": frame_id,
+        "frame": {"frame_id": frame_id, "timestamp": timestamp},
         "regions": results,
         "readable_regions": readable,
         "checked_regions": len(results),
         "tesseract_available": bool(tesseract),
-        "summary": f"OCR health checked {len(results)} region(s); {readable} readable.",
+        "explanation": "This checks saved OCR region boxes. If the boxes are wrong, move them on the frame preview, save, then run the check again.",
+        "summary": f"OCR regions checked: {len(results)} region(s), {readable} readable.",
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
     db.save_structured_analysis(match_id, "ocr_health", analysis)
     return {"ok": True, "message": analysis["summary"], "analysis": analysis}
+
+
+def ocr_health_region_names(value: Any) -> List[str]:
+    if not value:
+        return ["hud_top", "killfeed", "combat_report", "hud_bottom", "minimap"]
+    raw = value
+    if isinstance(raw, str):
+        raw = [item.strip() for item in raw.split(",") if item.strip()]
+    names = []
+    for item in raw if isinstance(raw, list) else []:
+        normalized = normalize_ocr_region_name(str(item))
+        if normalized and normalized not in names:
+            names.append(normalized)
+    return names or ["hud_top", "killfeed", "combat_report", "hud_bottom", "minimap"]
+
+
+def normalize_ocr_region_name(name: str) -> str:
+    cleaned = name.strip().lower().replace("-", "_").replace(" ", "_")
+    if cleaned in OCR_HEALTH_REGION_INFO:
+        return cleaned
+    for key, info in OCR_HEALTH_REGION_INFO.items():
+        if cleaned in info.get("aliases", set()):
+            return key
+    return cleaned
+
+
+def ocr_health_region_metadata(name: str) -> Dict[str, Any]:
+    info = OCR_HEALTH_REGION_INFO.get(name) or {}
+    return {
+        "label": info.get("label") or name.replace("_", " ").title(),
+        "purpose": info.get("purpose") or "OCR region crop.",
+    }
 
 
 def parse_health_timestamp(payload: Dict[str, Any], deaths: List[Dict[str, Any]]) -> float:
@@ -1228,7 +1300,7 @@ def read_round_score_health(tesseract: str, image: Image.Image, frame_path: Path
     }
 
 
-APP_VERSION = "0.26.0-local"
+APP_VERSION = "0.27.0-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -1239,6 +1311,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Replace confusing OCR Health UI with a full-frame OCR region setup, draggable boxes, friendly labels, and calibration reset.",
             "Document UI/UX architecture and recluster the match review page into Deaths, Coach, Player Status, and Diagnostics tabs.",
             "Add trust evidence receipts, marker lifecycle badges, OCR health checks, clear-unreviewed suggestions, and round-unknown reason text.",
             "Add Detector Model Dashboard with dataset readiness, class coverage targets, milestones, training progress, evaluation metrics, and runtime training controls.",

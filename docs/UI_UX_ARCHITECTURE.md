@@ -33,6 +33,7 @@ This file is the living knowledge note for the VALORANT Coach Agent interface. U
 - Evidence receipts are useful for trust but should stay folded by default.
 - Manual editing and corrections should be available, but not more prominent than the review and coaching path.
 - Keep backend APIs stable during UI reclustering unless a new UI state requires a small read-only endpoint.
+- OCR setup must show the full frame plus the active boxes. Raw crop thumbnails alone are not enough because users need to see whether the box is placed on the correct HUD area.
 
 ## Implementation Direction
 
@@ -41,4 +42,5 @@ This file is the living knowledge note for the VALORANT Coach Agent interface. U
 - Use concise match-level action buttons: Find Deaths, Match Coach Plan, OCR Health, Write Report.
 - Keep death cards summary-first: timestamp, round/source, labels, marker lifecycle, Jump, Coach Clip.
 - Move context, advice details, evidence receipts, marker editing, detector annotation, and legacy diagnostics into named foldouts.
+- Present OCR calibration as **Check OCR Regions**: capture a frame, drag/resize named boxes, save regions, then rerun the OCR check.
 - Prefer small frontend render helpers over adding more logic directly inside `renderReport` or `renderDeathCard`.

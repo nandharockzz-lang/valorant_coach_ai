@@ -858,6 +858,68 @@ video {
   margin-top: 10px;
 }
 
+.ocr-region-setup {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.ocr-frame-preview {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #090d13;
+}
+
+.ocr-frame-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.ocr-region-overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.ocr-region-box {
+  position: absolute;
+  min-width: 28px;
+  min-height: 22px;
+  border: 2px solid rgba(49, 198, 183, 0.95);
+  background: rgba(49, 198, 183, 0.10);
+  cursor: move;
+}
+
+.ocr-region-box span {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  max-width: calc(100% - 8px);
+  overflow: hidden;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(7, 11, 17, 0.84);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ocr-region-box i {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 13px;
+  height: 13px;
+  border: 2px solid #081018;
+  border-radius: 50%;
+  background: var(--red);
+  cursor: nwse-resize;
+}
+
 .ocr-health-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

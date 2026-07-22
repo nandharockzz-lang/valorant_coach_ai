@@ -34,6 +34,7 @@ const CALIBRATION_REGIONS = [
 ];
 let selectedCalibrationRegion = "minimap";
 let dragCalibration = null;
+let ocrRegionDrag = null;
 let detectorBoxDrag = null;
 const LABEL_PRESETS = [
   "dry peek",
@@ -2132,7 +2133,7 @@ function renderMatchActionBar(matchId, report) {
       <div class="match-action-buttons">
         <button data-action="suggest" data-id="${matchId}">Find Deaths</button>
         <button class="secondary" data-action="guided-coach" data-id="${matchId}">Match Coach Plan</button>
-        <button class="secondary" data-action="ocr-health" data-id="${matchId}">OCR Health</button>
+        <button class="secondary" data-action="ocr-health" data-id="${matchId}">Check OCR Regions</button>
         <button class="ghost" data-action="write" data-id="${matchId}">Write Report</button>
       </div>
     </section>
@@ -2498,12 +2499,18 @@ function renderManualMarkerForm(matchId) {
       </div>
     </section>
     <section>
-      <h3>OCR Health Check</h3>
+      <h3>Check OCR Regions</h3>
+      <p class="muted">This checks whether the saved HUD boxes are placed correctly. It does not auto-detect regions yet.</p>
       <div class="add-death">
         <label>Video time <input id="ocrHealthTimestamp" type="text" placeholder="blank = current player time" /></label>
-        <label>Regions <input id="ocrHealthRegions" type="text" value="killfeed,combat_report,hud_top,hud_bottom,round_score" /></label>
-        <button class="secondary" data-action="ocr-health" data-id="${matchId}">Run OCR Health</button>
+        <button class="secondary" data-action="ocr-health" data-id="${matchId}">Capture Current Frame</button>
+        <button class="secondary" data-action="save-ocr-regions">Save OCR Regions</button>
+        <button class="ghost" data-action="reset-ocr-regions" data-id="${matchId}">Reset Defaults</button>
       </div>
+      <details class="advanced-actions">
+        <summary>Advanced region list</summary>
+        <label>Regions <input id="ocrHealthRegions" type="text" value="hud_top,killfeed,combat_report,hud_bottom,minimap" /></label>
+      </details>
       <div id="ocrHealthResult" class="ocr-health-result"></div>
     </section>
   `;
@@ -3784,35 +3791,95 @@ async function runOcrHealthCheck(matchId) {
   const timestamp = rawTime ? parseTimeInput(rawTime) : (player ? player.currentTime : null);
   const regions = (regionInput?.value || "").split(",").map((item) => item.trim()).filter(Boolean);
   const mount = document.querySelector("#ocrHealthResult");
-  if (mount) mount.innerHTML = '<p class="muted">Extracting frame and checking OCR crops...</p>';
-  setStatus("Running OCR health check...", { state: "busy" });
+  if (mount) mount.innerHTML = '<p class="muted">Capturing frame and checking OCR region boxes...</p>';
+  setStatus("Checking OCR regions...", { state: "busy" });
   const payload = await api(`/api/matches/${matchId}/ocr-health`, {
     method: "POST",
     body: JSON.stringify({ timestamp, regions }),
   });
   if (mount) mount.innerHTML = renderOcrHealthResult(payload.analysis || {});
-  setStatus(payload.message || "OCR health check complete.");
+  setStatus(payload.message || "OCR region check complete.");
 }
 
 function renderOcrHealthResult(analysis) {
+  for (const item of analysis.regions || []) {
+    if (item.region && item.box) {
+      currentCalibration[item.region] = { ...item.box };
+    }
+  }
   const cards = (analysis.regions || []).map((item) => `
     <article class="ocr-health-card ${escapeAttr(item.status || "")}">
       ${item.frame_id ? `<img src="/api/vision/frame/${escapeAttr(item.frame_id)}" alt="${escapeAttr(item.region)} OCR crop" />` : ""}
       <div>
-        <strong>${escapeHtml(item.region || "region")}</strong>
+        <strong>${escapeHtml(item.label || item.region || "region")}</strong>
         <span class="tag">${escapeHtml(item.status || "unknown")}</span>
+        <p class="muted">${escapeHtml(item.purpose || "")}</p>
         <p>${escapeHtml(item.message || "")}</p>
         ${item.text ? `<pre>${escapeHtml(shortenText(item.text, 300))}</pre>` : ""}
       </div>
     </article>
   `).join("");
   return `
+    <section class="ocr-region-setup">
+      <div class="review-head">
+        <div>
+          <strong>OCR Region Setup</strong>
+          <p class="muted">${escapeHtml(analysis.explanation || "Move boxes onto the matching HUD regions, save, then run the check again.")}</p>
+        </div>
+        <span class="muted">${formatTs(analysis.timestamp)}</span>
+      </div>
+      ${renderOcrRegionFrame(analysis)}
+    </section>
     <div class="review-head">
-      <strong>${escapeHtml(analysis.summary || "OCR health result")}</strong>
+      <strong>${escapeHtml(analysis.summary || "OCR region result")}</strong>
       <span class="muted">${formatTs(analysis.timestamp)}</span>
     </div>
     <div class="ocr-health-grid">${cards || '<p class="muted">No OCR regions returned.</p>'}</div>
   `;
+}
+
+function renderOcrRegionFrame(analysis) {
+  const frameId = analysis.frame?.frame_id || analysis.frame_id;
+  if (!frameId) {
+    return '<p class="muted">No full-frame preview was returned.</p>';
+  }
+  const boxes = (analysis.regions || [])
+    .filter((item) => item.box)
+    .map((item) => {
+      const box = item.box;
+      return `
+        <div class="ocr-region-box" data-region="${escapeAttr(item.region)}" style="left:${box.x * 100}%;top:${box.y * 100}%;width:${box.w * 100}%;height:${box.h * 100}%">
+          <span>${escapeHtml(item.label || item.region)}</span>
+          <i aria-hidden="true"></i>
+        </div>
+      `;
+    }).join("");
+  return `
+    <div class="ocr-frame-preview" data-frame-id="${escapeAttr(frameId)}">
+      <img src="/api/vision/frame/${escapeAttr(frameId)}" alt="OCR calibration frame" />
+      <div class="ocr-region-overlay">${boxes}</div>
+    </div>
+    <p class="muted">Drag boxes or use the corner handle to resize. Then click Save OCR Regions and run the check again.</p>
+  `;
+}
+
+async function saveOcrRegions() {
+  await api("/api/calibration", {
+    method: "POST",
+    body: JSON.stringify({ regions: currentCalibration }),
+  });
+  renderCalibration(currentCalibration);
+  setStatus("OCR regions saved.");
+}
+
+async function resetOcrRegions(matchId) {
+  const payload = await api("/api/calibration/reset", { method: "POST" });
+  currentCalibration = payload.regions || {};
+  renderCalibration(currentCalibration);
+  setStatus("OCR regions reset to defaults.");
+  if (matchId) {
+    await runOcrHealthCheck(matchId);
+  }
 }
 
 async function saveDeath(button) {
@@ -3913,6 +3980,48 @@ function loopDeath(ts) {
   player.removeEventListener("timeupdate", window.__deathLoopHandler || (() => {}));
   window.__deathLoopHandler = onTime;
   player.addEventListener("timeupdate", onTime);
+}
+
+function startOcrRegionDrag(event) {
+  const box = event.target.closest(".ocr-region-box");
+  if (!box) return;
+  event.preventDefault();
+  const overlay = box.closest(".ocr-region-overlay");
+  const regionName = box.dataset.region;
+  const region = currentCalibration[regionName];
+  if (!overlay || !region) return;
+  ocrRegionDrag = {
+    mode: event.target.tagName === "I" ? "resize" : "move",
+    box,
+    rect: overlay.getBoundingClientRect(),
+    startX: event.clientX,
+    startY: event.clientY,
+    regionName,
+    region: { ...region },
+  };
+}
+
+function updateOcrRegionDrag(event) {
+  if (!ocrRegionDrag) return;
+  const dx = (event.clientX - ocrRegionDrag.startX) / ocrRegionDrag.rect.width;
+  const dy = (event.clientY - ocrRegionDrag.startY) / ocrRegionDrag.rect.height;
+  const next = { ...ocrRegionDrag.region };
+  if (ocrRegionDrag.mode === "resize") {
+    next.w = clamp(next.w + dx, 0.02, 1 - next.x);
+    next.h = clamp(next.h + dy, 0.02, 1 - next.y);
+  } else {
+    next.x = clamp(next.x + dx, 0, 1 - next.w);
+    next.y = clamp(next.y + dy, 0, 1 - next.h);
+  }
+  currentCalibration[ocrRegionDrag.regionName] = next;
+  ocrRegionDrag.box.style.left = `${next.x * 100}%`;
+  ocrRegionDrag.box.style.top = `${next.y * 100}%`;
+  ocrRegionDrag.box.style.width = `${next.w * 100}%`;
+  ocrRegionDrag.box.style.height = `${next.h * 100}%`;
+}
+
+function stopOcrRegionDrag() {
+  ocrRegionDrag = null;
 }
 
 function renderCalibrationOverlay() {
@@ -4136,6 +4245,8 @@ els.reportView.addEventListener("click", (event) => {
   if (action === "clear-pending-suggestions") clearPendingSuggestions(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "load-evidence") loadDeathEvidence(button).catch((err) => setStatus(err.message));
   if (action === "ocr-health") runOcrHealthCheck(button.dataset.id).catch((err) => setStatus(err.message));
+  if (action === "save-ocr-regions") saveOcrRegions().catch((err) => setStatus(err.message));
+  if (action === "reset-ocr-regions") resetOcrRegions(button.dataset.id || currentMatchId).catch((err) => setStatus(err.message));
   if (action === "coach-moment-feedback") saveCoachMomentFeedback(button).catch((err) => setStatus(err.message));
   if (action === "benchmark-false-positive") saveBenchmarkLabel({ match_id: button.dataset.match, suggestion_id: button.dataset.id, timestamp: button.dataset.ts, label_type: "false_positive", note: "Marked from suggestion card" }).catch((err) => setStatus(err.message));
   if (action === "benchmark-true-positive") saveBenchmarkLabel({ match_id: button.dataset.match, death_id: button.dataset.id, timestamp: button.dataset.ts, label_type: "true_positive", note: "Marked from death card" }).catch((err) => setStatus(err.message));
@@ -4181,10 +4292,13 @@ els.reportView.addEventListener("change", (event) => {
   }
 });
 els.reportView.addEventListener("pointerdown", startCalibrationDrag);
+els.reportView.addEventListener("pointerdown", startOcrRegionDrag);
 els.reportView.addEventListener("pointerdown", startDetectorBoxDrag);
 window.addEventListener("pointermove", moveCalibrationDrag);
+window.addEventListener("pointermove", updateOcrRegionDrag);
 window.addEventListener("pointermove", updateDetectorBoxDrag);
 window.addEventListener("pointerup", stopCalibrationDrag);
+window.addEventListener("pointerup", stopOcrRegionDrag);
 window.addEventListener("pointerup", stopDetectorBoxDrag);
 
 setStatus("Loading app...", { state: "busy" });

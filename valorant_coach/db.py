@@ -362,12 +362,12 @@ class Database:
 
     def get_calibration(self) -> Dict[str, Dict[str, float]]:
         defaults = {
-            "hud_top": {"x": 0.20, "y": 0.00, "w": 0.60, "h": 0.14},
-            "hud_bottom": {"x": 0.20, "y": 0.78, "w": 0.60, "h": 0.22},
-            "killfeed": {"x": 0.54, "y": 0.00, "w": 0.46, "h": 0.24},
-            "minimap": {"x": 0.02, "y": 0.02, "w": 0.20, "h": 0.28},
+            "hud_top": {"x": 0.37, "y": 0.00, "w": 0.26, "h": 0.11},
+            "hud_bottom": {"x": 0.30, "y": 0.78, "w": 0.40, "h": 0.22},
+            "killfeed": {"x": 0.72, "y": 0.02, "w": 0.27, "h": 0.22},
+            "minimap": {"x": 0.015, "y": 0.02, "w": 0.22, "h": 0.30},
             "crosshair": {"x": 0.45, "y": 0.45, "w": 0.10, "h": 0.10},
-            "combat_report": {"x": 0.68, "y": 0.22, "w": 0.28, "h": 0.50},
+            "combat_report": {"x": 0.72, "y": 0.19, "w": 0.27, "h": 0.48},
         }
         with self.connect() as conn:
             rows = conn.execute("SELECT region_name, x, y, w, h FROM calibration_regions").fetchall()
@@ -403,6 +403,11 @@ class Database:
                     """,
                     values,
                 )
+
+    def reset_calibration(self, region_names: Optional[List[str]] = None) -> None:
+        names = region_names or ["hud_top", "hud_bottom", "killfeed", "minimap", "crosshair", "combat_report"]
+        with self.connect() as conn:
+            conn.executemany("DELETE FROM calibration_regions WHERE region_name = ?", [(name,) for name in names])
 
     def upsert_match(self, video_path: str, started_at: str, status: str = "queued") -> int:
         with self.connect() as conn:

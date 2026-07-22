@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from valorant_coach.automation import death_evidence, ocr_health_check
+from valorant_coach.automation import death_evidence, normalize_ocr_region_name, ocr_health_check, ocr_health_region_metadata
 from valorant_coach.db import Database
 from valorant_coach.reports import build_report
 
@@ -80,6 +80,22 @@ class TrustPassTests(unittest.TestCase):
 
             self.assertFalse(result["ok"])
             self.assertEqual(result["status"], "missing_video")
+
+    def test_ocr_region_aliases_are_user_friendly(self):
+        self.assertEqual(normalize_ocr_region_name("Top Score"), "hud_top")
+        self.assertEqual(normalize_ocr_region_name("bottom-hud"), "hud_bottom")
+        self.assertEqual(ocr_health_region_metadata("combat_report")["label"], "Combat Report")
+
+    def test_reset_calibration_restores_defaults(self):
+        with TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "coach.sqlite3")
+            original = db.get_calibration()["killfeed"]
+            db.save_calibration({"killfeed": {"x": 0.1, "y": 0.1, "w": 0.1, "h": 0.1}})
+            self.assertNotEqual(db.get_calibration()["killfeed"], original)
+
+            db.reset_calibration(["killfeed"])
+
+            self.assertEqual(db.get_calibration()["killfeed"], original)
 
 
 if __name__ == "__main__":

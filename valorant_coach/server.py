@@ -304,6 +304,9 @@ class CoachHandler(BaseHTTPRequestHandler):
                     return
                 DB.save_calibration(regions)
                 self.json_response({"ok": True, "regions": DB.get_calibration()})
+            elif parsed.path == "/api/calibration/reset":
+                DB.reset_calibration()
+                self.json_response({"ok": True, "regions": DB.get_calibration()})
             elif parsed.path == "/api/scan":
                 self.json_response({"ok": True, **scan_and_maybe_analyze(DB, PATHS, JOBS)})
             elif parsed.path == "/api/watcher/start":
