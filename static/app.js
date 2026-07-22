@@ -2432,6 +2432,15 @@ function renderManualMarkerForm(matchId) {
         <button data-action="add-death" data-id="${matchId}">Add Death</button>
       </div>
     </section>
+    <section>
+      <h3>OCR Health Check</h3>
+      <div class="add-death">
+        <label>Video time <input id="ocrHealthTimestamp" type="text" placeholder="blank = current player time" /></label>
+        <label>Regions <input id="ocrHealthRegions" type="text" value="killfeed,combat_report,hud_top,hud_bottom,round_score" /></label>
+        <button class="secondary" data-action="ocr-health" data-id="${matchId}">Run OCR Health</button>
+      </div>
+      <div id="ocrHealthResult" class="ocr-health-result"></div>
+    </section>
   `;
 }
 
@@ -2795,6 +2804,7 @@ function renderSuggestions(suggestions) {
       <div class="review-head">
         <h3>Pending Death Candidates</h3>
         <span class="muted">${suggestions.length} to verify</span>
+        <button class="secondary" data-action="clear-pending-suggestions" data-id="${currentMatchId}">Clear Unreviewed</button>
       </div>
       <div class="suggestion-list">${cards}</div>
     </section>
@@ -2955,17 +2965,26 @@ function renderDeathCard(death) {
   const localAi = renderLocalAiReview(death.local_ai_review, death);
   const annotations = renderAnnotations(death.annotations || []);
   const contextPanel = renderMatchContextPanel(death.match_context || {}, death);
+  const lifecycle = renderMarkerLifecycle(death.marker_lifecycle || {});
   return `
     <article class="death-card" data-death-id="${death.id}">
       <div class="death-card-header">
         <div class="death-card-title">
           <strong>${escapeHtml(formatDeathTime(death))}</strong>
           ${renderTags(death.mistake_labels || [])}
+          ${lifecycle}
         </div>
         <button class="secondary" data-action="jump" data-ts="${death.timestamp || 0}">Jump</button>
         <button data-action="coach-clip" data-id="${death.id}">${death.advice || death.local_ai_review ? "Refresh Coach" : "Coach This Clip"}</button>
       </div>
       ${death.notes ? `<p class="death-note">${escapeHtml(shortenText(death.notes, 180))}</p>` : ""}
+      <details class="evidence-panel">
+        <summary>Evidence and gaps</summary>
+        <div class="evidence-body" data-evidence-target="${death.id}">
+          <p class="muted">${escapeHtml((death.marker_lifecycle || {}).source_detail || "Load evidence receipts for this marker.")}</p>
+          <button class="secondary" data-action="load-evidence" data-id="${death.id}">Load Evidence</button>
+        </div>
+      </details>
       ${contextPanel}
       ${advice}
       <details class="advanced-actions">
@@ -3024,6 +3043,15 @@ function renderDeathCard(death) {
       </details>
     </article>
   `;
+}
+
+function renderMarkerLifecycle(lifecycle) {
+  if (!lifecycle || !Object.keys(lifecycle).length) {
+    return "";
+  }
+  const trained = lifecycle.trained ? "trained" : "not trained";
+  const source = lifecycle.source || "manual";
+  return `<span class="marker-badge" title="${escapeAttr(lifecycle.source_detail || "")}">${escapeHtml(source)} · ${escapeHtml(trained)}</span>`;
 }
 
 function renderKeyframes(row) {
@@ -3600,6 +3628,104 @@ async function rejectSuggestion(id) {
   await loadReport(currentMatchId);
 }
 
+async function clearPendingSuggestions(matchId) {
+  const payload = await api(`/api/matches/${matchId}/suggestions/clear-pending`, { method: "POST" });
+  setStatus(`Cleared ${payload.cleared || 0} unreviewed suggestion(s).`);
+  await loadReport(matchId);
+}
+
+async function loadDeathEvidence(button) {
+  const target = document.querySelector(`[data-evidence-target="${button.dataset.id}"]`);
+  if (!target) return;
+  target.innerHTML = '<p class="muted">Loading evidence receipts...</p>';
+  const payload = await api(`/api/deaths/${button.dataset.id}/evidence`);
+  target.innerHTML = renderEvidenceResult(payload);
+  setStatus("Evidence loaded.");
+}
+
+function renderEvidenceResult(payload) {
+  const marker = payload.marker || {};
+  const detector = payload.detector || {};
+  const localAi = payload.local_ai || {};
+  const ocr = payload.ocr || {};
+  const frames = payload.frames || {};
+  const gaps = (payload.gaps || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const suggestions = (payload.suggestions || []).map((item) => `
+    <li>${escapeHtml(item.status || "unknown")} @ ${formatTs(item.timestamp)} · ${Math.round(Number(item.confidence || 0) * 100)}% · ${escapeHtml(shortenText(item.reason || "", 120))}</li>
+  `).join("");
+  return `
+    <div class="evidence-grid">
+      <article>
+        <span>Marker</span>
+        <strong>${escapeHtml(marker.source || "manual")}</strong>
+        <p>${formatTs(marker.timestamp)} · ${escapeHtml(marker.labels || [])}</p>
+      </article>
+      <article>
+        <span>Frames</span>
+        <strong>${Number(frames.keyframe_count || 0)}</strong>
+        <p>Saved keyframe receipt(s)</p>
+      </article>
+      <article>
+        <span>OCR</span>
+        <strong>${escapeHtml(ocr.status || "missing")}</strong>
+        <p>${Number(ocr.read_count || 0)} read(s)</p>
+      </article>
+      <article>
+        <span>Detector</span>
+        <strong>${Number(detector.annotation_count || 0)}</strong>
+        <p>${Number(detector.prelabel_count || 0)} prelabel(s)</p>
+      </article>
+      <article>
+        <span>Local AI</span>
+        <strong>${escapeHtml(localAi.status || "missing")}</strong>
+        <p>${escapeHtml(shortenText(localAi.summary || "", 130))}</p>
+      </article>
+    </div>
+    <p>${escapeHtml(payload.summary || "")}</p>
+    ${suggestions ? `<details class="advanced-actions"><summary>Nearby suggestion receipts</summary><ul class="compact-list">${suggestions}</ul></details>` : ""}
+    ${gaps ? `<details class="advanced-actions" open><summary>Evidence gaps</summary><ul class="compact-list">${gaps}</ul></details>` : ""}
+  `;
+}
+
+async function runOcrHealthCheck(matchId) {
+  const player = document.querySelector("#vodPlayer");
+  const timeInput = document.querySelector("#ocrHealthTimestamp");
+  const regionInput = document.querySelector("#ocrHealthRegions");
+  const rawTime = (timeInput?.value || "").trim();
+  const timestamp = rawTime ? parseTimeInput(rawTime) : (player ? player.currentTime : null);
+  const regions = (regionInput?.value || "").split(",").map((item) => item.trim()).filter(Boolean);
+  const mount = document.querySelector("#ocrHealthResult");
+  if (mount) mount.innerHTML = '<p class="muted">Extracting frame and checking OCR crops...</p>';
+  setStatus("Running OCR health check...", { state: "busy" });
+  const payload = await api(`/api/matches/${matchId}/ocr-health`, {
+    method: "POST",
+    body: JSON.stringify({ timestamp, regions }),
+  });
+  if (mount) mount.innerHTML = renderOcrHealthResult(payload.analysis || {});
+  setStatus(payload.message || "OCR health check complete.");
+}
+
+function renderOcrHealthResult(analysis) {
+  const cards = (analysis.regions || []).map((item) => `
+    <article class="ocr-health-card ${escapeAttr(item.status || "")}">
+      ${item.frame_id ? `<img src="/api/vision/frame/${escapeAttr(item.frame_id)}" alt="${escapeAttr(item.region)} OCR crop" />` : ""}
+      <div>
+        <strong>${escapeHtml(item.region || "region")}</strong>
+        <span class="tag">${escapeHtml(item.status || "unknown")}</span>
+        <p>${escapeHtml(item.message || "")}</p>
+        ${item.text ? `<pre>${escapeHtml(shortenText(item.text, 300))}</pre>` : ""}
+      </div>
+    </article>
+  `).join("");
+  return `
+    <div class="review-head">
+      <strong>${escapeHtml(analysis.summary || "OCR health result")}</strong>
+      <span class="muted">${formatTs(analysis.timestamp)}</span>
+    </div>
+    <div class="ocr-health-grid">${cards || '<p class="muted">No OCR regions returned.</p>'}</div>
+  `;
+}
+
 async function saveDeath(button) {
   const card = button.closest(".death-card");
   const id = button.dataset.id;
@@ -3791,7 +3917,7 @@ function formatDeathTime(death) {
     const source = death.round_source === "timeline" ? "timeline" : "est.";
     return `Round ${death.display_round_number} (${source}) · ${timestamp}`;
   }
-  return `${timestamp} · Round unknown`;
+  return `${timestamp} · ${death.round_unknown_reason || "Round unknown"}`;
 }
 
 function escapeHtml(value) {
@@ -3915,6 +4041,9 @@ els.reportView.addEventListener("click", (event) => {
   if (action === "preset-label") applyPreset(button);
   if (action === "accept-suggestion") acceptSuggestion(button).catch((err) => setStatus(err.message));
   if (action === "reject-suggestion") rejectSuggestion(button.dataset.id).catch((err) => setStatus(err.message));
+  if (action === "clear-pending-suggestions") clearPendingSuggestions(button.dataset.id).catch((err) => setStatus(err.message));
+  if (action === "load-evidence") loadDeathEvidence(button).catch((err) => setStatus(err.message));
+  if (action === "ocr-health") runOcrHealthCheck(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "coach-moment-feedback") saveCoachMomentFeedback(button).catch((err) => setStatus(err.message));
   if (action === "benchmark-false-positive") saveBenchmarkLabel({ match_id: button.dataset.match, suggestion_id: button.dataset.id, timestamp: button.dataset.ts, label_type: "false_positive", note: "Marked from suggestion card" }).catch((err) => setStatus(err.message));
   if (action === "benchmark-true-positive") saveBenchmarkLabel({ match_id: button.dataset.match, death_id: button.dataset.id, timestamp: button.dataset.ts, label_type: "true_positive", note: "Marked from death card" }).catch((err) => setStatus(err.message));

@@ -24,6 +24,7 @@ from .automation import (
     benchmark_labels,
     cleanup_storage,
     delete_playbook,
+    death_evidence,
     detector_tuning,
     evaluation_benchmark,
     export_memory,
@@ -52,6 +53,7 @@ from .automation import (
     run_local_ai_review,
     run_match_pipeline,
     run_suggest_deaths_job,
+    ocr_health_check,
     save_benchmark_label,
     save_clip_review_feedback,
     save_clip_training_label,
@@ -260,6 +262,9 @@ class CoachHandler(BaseHTTPRequestHandler):
             self.json_response(session_report(DB))
         elif parsed.path.startswith("/api/deaths/") and parsed.path.endswith("/clip"):
             self.handle_death_clip_get(parsed.path)
+        elif parsed.path.startswith("/api/deaths/") and parsed.path.endswith("/evidence"):
+            death_id = int(parsed.path.split("/")[3])
+            self.json_response(death_evidence(DB, death_id))
         elif parsed.path.startswith("/api/vision/frame/"):
             self.handle_vision_frame_get(parsed.path)
         elif parsed.path.startswith("/api/matches/"):
@@ -457,6 +462,10 @@ class CoachHandler(BaseHTTPRequestHandler):
                     lambda update, mid=match_id, options=payload: run_suggest_deaths_job(DB, mid, PATHS, update, options=options),
                 )
                 self.json_response({"ok": True, "job_id": job_id})
+            elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/suggestions/clear-pending"):
+                match_id = int(parsed.path.split("/")[3])
+                cleared = DB.clear_pending_death_suggestions(match_id)
+                self.json_response({"ok": True, "cleared": cleared})
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/events-v2"):
                 match_id = int(parsed.path.split("/")[3])
                 self.json_response(analyze_match_events(DB, match_id, VISION_DIR))
@@ -494,6 +503,9 @@ class CoachHandler(BaseHTTPRequestHandler):
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/ocr"):
                 match_id = int(parsed.path.split("/")[3])
                 self.json_response(analyze_ocr(DB, match_id, DEEP_DIR))
+            elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/ocr-health"):
+                match_id = int(parsed.path.split("/")[3])
+                self.json_response(ocr_health_check(DB, match_id, DEEP_DIR, self.read_json()))
             elif parsed.path.startswith("/api/matches/") and parsed.path.endswith("/scoreboard-rounds"):
                 match_id = int(parsed.path.split("/")[3])
                 self.json_response(infer_rounds_from_scoreboard(DB, match_id, DEEP_DIR))

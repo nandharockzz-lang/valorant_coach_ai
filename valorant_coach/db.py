@@ -920,6 +920,18 @@ class Database:
                 conn.executemany("DELETE FROM death_suggestions WHERE id = ?", [(item_id,) for item_id in delete_ids])
             return len(delete_ids)
 
+    def clear_pending_death_suggestions(self, match_id: int) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM death_suggestions WHERE match_id = ? AND status = 'pending'",
+                (match_id,),
+            ).fetchone()
+            conn.execute(
+                "DELETE FROM death_suggestions WHERE match_id = ? AND status = 'pending'",
+                (match_id,),
+            )
+        return int(row["count"] if row else 0)
+
     def update_death_suggestion_status(self, suggestion_id: int, status: str) -> None:
         if status not in {"pending", "accepted", "rejected"}:
             raise ValueError("invalid suggestion status")

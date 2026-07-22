@@ -23,7 +23,16 @@ from .clipper import extract_death_clips
 from .coach import build_coach_dashboard, build_guided_match_coach
 from .db import Database
 from .knowledge import build_knowledge_prompt_context, build_vocabulary_pack, vocabulary_key
-from .deep_analysis import analyze_hud, analyze_minimap, analyze_ocr, infer_rounds_from_scoreboard, run_tesseract, tesseract_path
+from .deep_analysis import (
+    analyze_hud,
+    analyze_minimap,
+    analyze_ocr,
+    extract_single_frame,
+    infer_rounds_from_scoreboard,
+    read_scoreboard_round,
+    run_tesseract,
+    tesseract_path,
+)
 from .memory import build_memory_prompt_context, load_coach_memory_state, save_coach_memory_state, update_coach_memory_from_review
 from .reports import build_report, write_markdown_report
 from .clipper import ffmpeg_path
@@ -976,7 +985,250 @@ def import_stats(db: Database, path: Path) -> Dict[str, Any]:
     return {"ok": True, "imported": imported}
 
 
-APP_VERSION = "0.24.0-local"
+def death_evidence(db: Database, death_id: int) -> Dict[str, Any]:
+    death = db.get_death(death_id)
+    if not death:
+        return {"ok": False, "message": "death not found"}
+    match_id = int(death.get("match_id") or 0)
+    suggestions = db.list_death_suggestions(match_id)
+    nearby_suggestions = [
+        item
+        for item in suggestions
+        if death.get("timestamp") is not None
+        and item.get("timestamp") is not None
+        and abs(float(item["timestamp"]) - float(death["timestamp"])) <= 5.0
+    ]
+    detector_annotations = db.list_subject_analyses("death", death_id, "detector_annotation", limit=50)
+    detector_prelabels = db.list_subject_analyses("death", death_id, "detector_prelabel", limit=20)
+    local_ai_sequences = db.list_subject_analyses("death", death_id, "local_ai_sequence", limit=5)
+    gaps = []
+    keyframes_payload = (death.get("keyframes") or {}).get("payload") or {}
+    ocr_payload = (death.get("clip_ocr_regions") or {}).get("payload") or {}
+    visual_payload = (death.get("clip_visual_signals") or {}).get("payload") or {}
+    local_ai_payload = (death.get("local_ai_review") or {}).get("payload") or {}
+    if not (keyframes_payload.get("frames") or []):
+        gaps.append("No keyframes extracted for this marker.")
+    if not (ocr_payload.get("reads") or ocr_payload.get("regions")):
+        gaps.append("No per-clip OCR receipt has been saved.")
+    if not death.get("local_ai_review"):
+        gaps.append("No local AI Clip Coach review has been saved.")
+    if not detector_annotations and not detector_prelabels:
+        gaps.append("No trained detector label/prelabel evidence has been saved.")
+    if not nearby_suggestions:
+        gaps.append("No death suggestion receipt exists within 5 seconds of this marker.")
+
+    marker_source = "manual"
+    accepted = next((item for item in nearby_suggestions if item.get("status") == "accepted"), None)
+    if accepted:
+        marker_source = "accepted suggestion"
+    elif float(death.get("confidence") or 0) < 1 and nearby_suggestions:
+        marker_source = "near suggestion"
+
+    return {
+        "ok": True,
+        "death_id": death_id,
+        "marker": {
+            "match_id": match_id,
+            "timestamp": death.get("timestamp"),
+            "round_number": death.get("round_number"),
+            "confidence": round(float(death.get("confidence") or 0), 2),
+            "labels": death.get("mistake_labels") or [],
+            "notes": death.get("notes") or "",
+            "status": "confirmed",
+            "source": marker_source,
+        },
+        "suggestions": [
+            {
+                "id": item.get("id"),
+                "timestamp": item.get("timestamp"),
+                "status": item.get("status"),
+                "confidence": item.get("confidence"),
+                "reason": item.get("reason"),
+            }
+            for item in nearby_suggestions
+        ],
+        "frames": {
+            "keyframe_count": len(keyframes_payload.get("frames") or []),
+            "frames": (keyframes_payload.get("frames") or [])[:8],
+        },
+        "ocr": {
+            "status": "available" if ocr_payload else "missing",
+            "summary": ocr_payload.get("summary") or "",
+            "read_count": len(ocr_payload.get("reads") or []),
+            "readable_regions": ocr_payload.get("readable_regions") or [],
+        },
+        "visual_signals": summarize_evidence_payload(visual_payload),
+        "detector": {
+            "annotation_count": len(detector_annotations),
+            "prelabel_count": len(detector_prelabels),
+            "annotations": [item.get("payload") for item in detector_annotations[:8]],
+            "prelabels": [item.get("payload") for item in detector_prelabels[:5]],
+        },
+        "local_ai": {
+            "status": "available" if local_ai_payload else "missing",
+            "summary": local_ai_payload.get("summary") or "",
+            "confidence": local_ai_payload.get("confidence"),
+            "review_quality": local_ai_payload.get("review_quality") or {},
+            "sequence_receipts": [item.get("payload") for item in local_ai_sequences],
+        },
+        "gaps": gaps,
+        "summary": evidence_summary(marker_source, gaps, local_ai_payload, visual_payload),
+    }
+
+
+def summarize_evidence_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not payload:
+        return {"status": "missing"}
+    return {
+        "status": payload.get("status") or "available",
+        "confidence": payload.get("confidence"),
+        "summary": payload.get("summary") or payload.get("message") or "",
+        "first_contact": payload.get("first_contact") or {},
+        "death_cue": payload.get("death_cue") or {},
+        "crosshair_score": payload.get("crosshair_score") or {},
+        "movement_read": payload.get("movement_read") or {},
+    }
+
+
+def evidence_summary(source: str, gaps: List[str], local_ai: Dict[str, Any], visual: Dict[str, Any]) -> str:
+    parts = [f"Marker source: {source}."]
+    if local_ai.get("summary"):
+        parts.append(f"Local AI: {local_ai['summary']}")
+    elif visual.get("summary"):
+        parts.append(f"Visual signals: {visual['summary']}")
+    if gaps:
+        parts.append(f"{len(gaps)} evidence gap(s) remain.")
+    return " ".join(parts)
+
+
+def ocr_health_check(db: Database, match_id: int, work_dir: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
+    match = db.get_match(match_id)
+    if not match:
+        return {"ok": False, "message": "match not found"}
+    video_path = Path(match.get("video_path") or "")
+    if not video_path.exists():
+        return {"ok": False, "message": "Video file is missing.", "status": "missing_video"}
+    ffmpeg = ffmpeg_path()
+    if not ffmpeg:
+        return {"ok": False, "message": "ffmpeg is required to extract an OCR health frame.", "status": "missing_tool"}
+
+    timestamp = parse_health_timestamp(payload, db.get_deaths(match_id))
+    regions = payload.get("regions") or ["killfeed", "combat_report", "hud_top", "hud_bottom", "round_score"]
+    if isinstance(regions, str):
+        regions = [item.strip() for item in regions.split(",") if item.strip()]
+    frame_dir = work_dir / "ocr-health" / f"match-{match_id}"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    frame_id = f"ocr-health-m{match_id}-{int(timestamp * 10):08d}"
+    frame_path = frame_dir / f"{frame_id}.jpg"
+    if not extract_single_frame(ffmpeg, video_path, timestamp, frame_path):
+        return {"ok": False, "message": "Could not extract OCR health frame.", "status": "frame_failed"}
+
+    tesseract = tesseract_path()
+    calibration = db.get_calibration()
+    image = Image.open(frame_path).convert("RGB")
+    arr = np.asarray(image).astype(np.float32) / 255.0
+    results = []
+    for region_name in regions:
+        name = str(region_name)
+        if name == "round_score":
+            results.append(read_round_score_health(tesseract, image, frame_path, frame_dir, frame_id))
+            continue
+        region = calibration.get(name)
+        if not region:
+            results.append({"region": name, "status": "missing_calibration", "message": "No calibration region exists."})
+            continue
+        crop_arr = crop_region(arr, region)
+        crop_image = Image.fromarray(np.clip(crop_arr * 255, 0, 255).astype(np.uint8))
+        crop_id = f"{frame_id}-{name}"
+        crop_path = frame_dir / f"{crop_id}.jpg"
+        crop_image.save(crop_path, quality=88)
+        if not tesseract:
+            results.append(
+                {
+                    "region": name,
+                    "status": "missing_tool",
+                    "message": "Tesseract OCR is not installed or not on PATH.",
+                    "frame_id": crop_id,
+                    "crop_path": str(crop_path),
+                    "text": "",
+                }
+            )
+            continue
+        prepared_path = frame_dir / f"{crop_id}-ocr.png"
+        preprocess_general_ocr_crop(crop_image).save(prepared_path)
+        text = run_tesseract(tesseract, prepared_path)
+        results.append(
+            {
+                "region": name,
+                "status": "readable" if text else "unreadable",
+                "message": "OCR text found." if text else "Crop extracted but OCR returned no text.",
+                "frame_id": crop_id,
+                "crop_path": str(crop_path),
+                "text": text,
+                "kind": classify_ocr_region_text(name, text),
+            }
+        )
+
+    readable = sum(1 for item in results if item.get("status") == "readable")
+    analysis = {
+        "kind": "ocr_health",
+        "timestamp": timestamp,
+        "frame_id": frame_id,
+        "regions": results,
+        "readable_regions": readable,
+        "checked_regions": len(results),
+        "tesseract_available": bool(tesseract),
+        "summary": f"OCR health checked {len(results)} region(s); {readable} readable.",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    db.save_structured_analysis(match_id, "ocr_health", analysis)
+    return {"ok": True, "message": analysis["summary"], "analysis": analysis}
+
+
+def parse_health_timestamp(payload: Dict[str, Any], deaths: List[Dict[str, Any]]) -> float:
+    try:
+        timestamp = float(payload.get("timestamp"))
+        if timestamp >= 0:
+            return timestamp
+    except (TypeError, ValueError):
+        pass
+    for death in deaths:
+        if death.get("timestamp") is not None:
+            return max(0.0, float(death["timestamp"]))
+    return 60.0
+
+
+def read_round_score_health(tesseract: str, image: Image.Image, frame_path: Path, frame_dir: Path, frame_id: str) -> Dict[str, Any]:
+    crop_id = f"{frame_id}-round_score"
+    width, height = image.size
+    crop_path = frame_dir / f"{crop_id}.jpg"
+    image.crop((int(width * 0.38), 0, int(width * 0.62), int(height * 0.14))).save(crop_path, quality=88)
+    if not tesseract:
+        return {
+            "region": "round_score",
+            "status": "missing_tool",
+            "message": "Tesseract OCR is not installed or not on PATH.",
+            "frame_id": crop_id,
+            "crop_path": str(crop_path),
+            "text": "",
+        }
+    read = read_scoreboard_round(tesseract, frame_path, frame_dir, 0, sample_tag="health")
+    text = ""
+    if read.get("left_score") is not None and read.get("right_score") is not None:
+        text = f"{read['left_score']}-{read['right_score']} round {read.get('round_number')}"
+    return {
+        "region": "round_score",
+        "status": "readable" if read.get("round_number") else "unreadable",
+        "message": read.get("status") or "score OCR attempted",
+        "frame_id": crop_id,
+        "crop_path": str(crop_path),
+        "text": text,
+        "score_read": read,
+        "kind": "score_or_round",
+    }
+
+
+APP_VERSION = "0.25.0-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -987,6 +1239,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Add trust evidence receipts, marker lifecycle badges, OCR health checks, clear-unreviewed suggestions, and round-unknown reason text.",
             "Add Detector Model Dashboard with dataset readiness, class coverage targets, milestones, training progress, evaluation metrics, and runtime training controls.",
             "Keep Clip Coach local-model output as the primary review and show deterministic detector evidence as diagnostics instead of replacing weak reviews with generic fallback text.",
             "Add Find Deaths range testing so a match can scan only a selected start/end time with an optional saved-candidate limit.",

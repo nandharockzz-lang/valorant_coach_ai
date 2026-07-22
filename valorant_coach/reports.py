@@ -12,9 +12,7 @@ def build_report(db: Database, match_id: int) -> Dict[str, Any]:
         raise ValueError(f"Unknown match id: {match_id}")
     rounds = db.get_rounds(match_id)
     deaths = db.get_deaths(match_id)
-    enrich_deaths_with_display_rounds(deaths, rounds)
     review = db.get_latest_match_review(match_id)
-    suggestions = db.get_death_suggestions(match_id)
     match_analyses = {
         analysis_type: db.get_latest_structured_analysis("match", match_id, analysis_type)
         for analysis_type in (
@@ -37,6 +35,10 @@ def build_report(db: Database, match_id: int) -> Dict[str, Any]:
             "guided_coach",
         )
     }
+    enrich_deaths_with_display_rounds(deaths, rounds, match_analyses)
+    all_suggestions = db.list_death_suggestions(match_id)
+    enrich_deaths_with_marker_lifecycle(db, deaths, all_suggestions)
+    suggestions = [item for item in all_suggestions if item.get("status") == "pending"]
     for death in deaths:
         death["round_phase"] = round_phase(rounds, death.get("timestamp"))
         death["match_context"] = build_death_match_context(db, match, death, rounds, match_analyses)
@@ -371,8 +373,13 @@ def recommendation_for(label: str, count: int) -> str:
     return f"{label} x{count}: {base}"
 
 
-def enrich_deaths_with_display_rounds(deaths: List[Dict[str, Any]], rounds: List[Dict[str, Any]]) -> None:
+def enrich_deaths_with_display_rounds(
+    deaths: List[Dict[str, Any]],
+    rounds: List[Dict[str, Any]],
+    match_analyses: Optional[Dict[str, Any]] = None,
+) -> None:
     """Attach a UI-safe round label without pretending an estimate is confirmed data."""
+    scoreboard = latest_payload((match_analyses or {}).get("scoreboard_rounds"))
     for death in deaths:
         if death.get("round_number"):
             death["display_round_number"] = int(death["round_number"])
@@ -387,6 +394,85 @@ def enrich_deaths_with_display_rounds(deaths: List[Dict[str, Any]], rounds: List
         if estimated:
             death["display_round_number"] = estimated
             death["round_source"] = "estimated"
+            continue
+        death["round_unknown_reason"] = round_unknown_reason(death, rounds, scoreboard)
+
+
+def round_unknown_reason(death: Dict[str, Any], rounds: List[Dict[str, Any]], scoreboard: Dict[str, Any]) -> str:
+    if death.get("timestamp") is None:
+        return "Round unknown: marker has no timestamp."
+    if not rounds and not scoreboard:
+        return "Round unknown: no round timeline or score OCR has run."
+    reads = scoreboard.get("reads") or []
+    if scoreboard and not reads:
+        return "Round unknown: score OCR has no death reads."
+    for item in reads:
+        if int(item.get("death_id") or 0) == int(death.get("id") or -1):
+            status = item.get("status") or item.get("reason") or "unreadable"
+            return f"Round unknown: score crop {status}."
+    if rounds:
+        return "Round unknown: death timestamp does not fit the reconstructed round timeline."
+    return "Round unknown: score OCR did not read this death marker."
+
+
+def enrich_deaths_with_marker_lifecycle(
+    db: Database,
+    deaths: List[Dict[str, Any]],
+    suggestions: List[Dict[str, Any]],
+) -> None:
+    for death in deaths:
+        death_id = int(death.get("id") or 0)
+        accepted = closest_suggestion(death, suggestions, "accepted")
+        rejected = closest_suggestion(death, suggestions, "rejected")
+        training = latest_payload(death.get("clip_training_label"))
+        detector_annotations = db.list_subject_analyses("death", death_id, "detector_annotation", limit=20)
+        source = "manual"
+        source_detail = "Created or edited as a confirmed marker."
+        if accepted:
+            source = "accepted suggestion"
+            source_detail = f"Accepted detector suggestion near {format_seconds(accepted.get('timestamp'))}."
+        elif float(death.get("confidence") or 0) < 1 and "suggest" in str(death.get("notes") or "").lower():
+            source = "suggestion-derived"
+            source_detail = "Marker notes indicate it came from an automated suggestion."
+        trained = bool(training or detector_annotations)
+        death["marker_lifecycle"] = {
+            "status": "confirmed",
+            "source": source,
+            "source_detail": source_detail,
+            "confidence": round(float(death.get("confidence") or 0), 2),
+            "trained": trained,
+            "training_evidence_count": len(detector_annotations) + (1 if training else 0),
+            "accepted_suggestion_id": accepted.get("id") if accepted else None,
+            "near_rejected_suggestion_id": rejected.get("id") if rejected else None,
+        }
+
+
+def closest_suggestion(
+    death: Dict[str, Any],
+    suggestions: List[Dict[str, Any]],
+    status: str,
+    window_seconds: float = 5.0,
+) -> Optional[Dict[str, Any]]:
+    if death.get("timestamp") is None:
+        return None
+    ts = float(death["timestamp"])
+    candidates = [
+        item
+        for item in suggestions
+        if item.get("status") == status
+        and item.get("timestamp") is not None
+        and abs(float(item["timestamp"]) - ts) <= window_seconds
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: abs(float(item["timestamp"]) - ts))
+
+
+def format_seconds(value: Any) -> str:
+    if value is None:
+        return "unknown time"
+    seconds = int(float(value))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
 
 
 def infer_round_from_timeline(rounds: List[Dict[str, Any]], timestamp: Any) -> int:

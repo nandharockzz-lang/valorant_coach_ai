@@ -699,6 +699,130 @@ video {
   line-height: 1.45;
 }
 
+.marker-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid #c9d9d6;
+  border-radius: 999px;
+  background: #f8fffd;
+  color: #225b55;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.evidence-panel {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.evidence-panel summary {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.evidence-body {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.evidence-grid article {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.evidence-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.evidence-grid strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+}
+
+.evidence-grid p {
+  color: #394553;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.ocr-health-result {
+  margin-top: 10px;
+}
+
+.ocr-health-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.ocr-health-card {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.ocr-health-card.readable {
+  border-left: 5px solid var(--teal);
+}
+
+.ocr-health-card.unreadable,
+.ocr-health-card.missing_tool,
+.ocr-health-card.missing_calibration {
+  border-left: 5px solid var(--yellow);
+}
+
+.ocr-health-card img {
+  width: 140px;
+  max-height: 90px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #111;
+}
+
+.ocr-health-card p {
+  color: #394553;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ocr-health-card pre {
+  overflow: auto;
+  max-height: 96px;
+  margin: 7px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: #f3f6f8;
+  color: #26313f;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
 .advanced-actions {
   margin-top: 10px;
 }
@@ -2234,7 +2358,10 @@ button {
 .guided-coach,
 .job-progress,
 .coach-moment-card,
-.suggestion-card {
+.suggestion-card,
+.evidence-panel,
+.evidence-grid article,
+.ocr-health-card {
   border-color: rgba(255, 255, 255, 0.08);
   background: var(--panel-2);
   color: var(--ink);
@@ -2272,6 +2399,8 @@ button {
 .vision-box p,
 .suggestion-card p,
 .death-note,
+.evidence-grid p,
+.ocr-health-card p,
 .coach-read,
 .json-small,
 .coach-action {
@@ -2284,6 +2413,17 @@ button {
 .json-small {
   background: var(--panel-3);
   border-color: var(--line);
+}
+
+.marker-badge {
+  border-color: rgba(49, 198, 183, 0.24);
+  background: rgba(49, 198, 183, 0.10);
+  color: #9fe4dc;
+}
+
+.ocr-health-card pre {
+  background: var(--panel-3);
+  color: #dce5f2;
 }
 
 .timeline-track {
@@ -2344,5 +2484,20 @@ button {
 
   .tab-panel.active {
     overflow: visible;
+  }
+
+  .evidence-grid,
+  .status-metric-grid,
+  .player-graph-grid,
+  .ocr-health-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ocr-health-card {
+    grid-template-columns: 1fr;
+  }
+
+  .ocr-health-card img {
+    width: 100%;
   }
 }
