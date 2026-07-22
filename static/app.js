@@ -136,73 +136,93 @@ async function loadVersionBadge() {
 }
 
 async function loadAutomation() {
+  if (els.automationView) {
+    els.automationView.innerHTML = '<div class="automation-block"><h3>Automation And Local AI</h3><p class="muted"><span class="status-spinner" aria-hidden="true"></span> Loading tools...</p></div>';
+  }
   const detectorCandidatePath = currentMatchId
     ? `/api/detector/candidates?match_id=${encodeURIComponent(currentMatchId)}`
     : "/api/detector/candidates";
-  const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorDashboard, detectorCandidates, signals, parametersDashboard] = await Promise.all([
-    api("/api/settings"),
-    api("/api/jobs"),
-    api("/api/watcher"),
-    api("/api/storage"),
-    api("/api/analytics"),
-    api("/api/logs"),
-    api("/api/tools"),
-    api("/api/backups"),
-    api("/api/schema"),
-    api("/api/version"),
-    api("/api/providers"),
-    api("/api/privacy"),
-    api("/api/corrections"),
-    api("/api/playbooks"),
-    api("/api/diagnostics"),
-    api("/api/evaluation"),
-    api("/api/plugins"),
-    api("/api/local-ai"),
-    api("/api/knowledge/status"),
-    api("/api/setup"),
-    api("/api/prompts"),
-    optionalApi("/api/detector/tuning", { summary: "Detector tuning unavailable until the server is restarted on the latest build." }),
-    optionalApi("/api/privacy/model-audit", { summary: "Model audit unavailable until the server is restarted on the latest build." }),
-    optionalApi("/api/sessions/report", { report: { summary: "Session report unavailable until the server is restarted on the latest build." } }),
-    optionalApi("/api/detector/status", { summary: "Detector status unavailable until the server is restarted on the latest build.", annotations: {} }),
-    optionalApi("/api/detector/dashboard", { summary: "Detector dashboard unavailable until the server is restarted on the latest build.", readiness_percent: 0, gaps: [] }),
-    optionalApi(detectorCandidatePath, { candidates: [], count: 0 }),
-    optionalApi("/api/signals", { signals: [] }),
-    optionalApi("/api/parameters/dashboard", { summary: "Parameter Trainer unavailable until the server is restarted on the latest build.", readiness_percent: 0, parameters: [], gaps: [] }),
-  ]);
-  renderAutomation(
-    settings,
-    jobs.jobs || [],
-    watcher.watcher || {},
-    storage.storage || {},
-    analytics,
-    logs.logs || [],
-    tools,
-    backups.backups || [],
-    schema,
-    version,
-    providers,
-    privacy,
-    corrections.corrections || [],
-    playbookPayload.playbooks || {},
-    diagnostics,
-    evaluation,
-    plugins,
-    localAi,
-    knowledge,
-    setup,
-    prompts,
-    tuning,
-    modelAudit,
-    sessionReport,
-    detectorStatus,
-    detectorDashboard,
-    detectorCandidates,
-    signals,
-    parametersDashboard
-  );
-  latestJobs = jobs.jobs || [];
-  renderJobProgressPanel();
+  try {
+    const [settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbookPayload, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorDashboard, detectorCandidates, signals, parametersDashboard] = await Promise.all([
+      api("/api/settings"),
+      api("/api/jobs"),
+      api("/api/watcher"),
+      api("/api/storage"),
+      api("/api/analytics"),
+      api("/api/logs"),
+      api("/api/tools"),
+      api("/api/backups"),
+      api("/api/schema"),
+      api("/api/version"),
+      api("/api/providers"),
+      api("/api/privacy"),
+      api("/api/corrections"),
+      api("/api/playbooks"),
+      api("/api/diagnostics"),
+      api("/api/evaluation"),
+      api("/api/plugins"),
+      api("/api/local-ai"),
+      api("/api/knowledge/status"),
+      api("/api/setup"),
+      api("/api/prompts"),
+      optionalApi("/api/detector/tuning", { summary: "Detector tuning unavailable until the server is restarted on the latest build." }),
+      optionalApi("/api/privacy/model-audit", { summary: "Model audit unavailable until the server is restarted on the latest build." }),
+      optionalApi("/api/sessions/report", { report: { summary: "Session report unavailable until the server is restarted on the latest build." } }),
+      optionalApi("/api/detector/status", { summary: "Detector status unavailable until the server is restarted on the latest build.", annotations: {} }),
+      optionalApi("/api/detector/dashboard", { summary: "Detector dashboard unavailable until the server is restarted on the latest build.", readiness_percent: 0, gaps: [] }),
+      optionalApi(detectorCandidatePath, { candidates: [], count: 0 }),
+      optionalApi("/api/signals", { signals: [] }),
+      optionalApi("/api/parameters/dashboard", { summary: "Parameter Trainer unavailable until the server is restarted on the latest build.", readiness_percent: 0, parameters: [], gaps: [] }),
+    ]);
+    renderAutomation(
+      settings,
+      jobs.jobs || [],
+      watcher.watcher || {},
+      storage.storage || {},
+      analytics,
+      logs.logs || [],
+      tools,
+      backups.backups || [],
+      schema,
+      version,
+      providers,
+      privacy,
+      corrections.corrections || [],
+      playbookPayload.playbooks || {},
+      diagnostics,
+      evaluation,
+      plugins,
+      localAi,
+      knowledge,
+      setup,
+      prompts,
+      tuning,
+      modelAudit,
+      sessionReport,
+      detectorStatus,
+      detectorDashboard,
+      detectorCandidates,
+      signals,
+      parametersDashboard
+    );
+    latestJobs = jobs.jobs || [];
+    renderJobProgressPanel();
+  } catch (err) {
+    renderAutomationError(err);
+    throw err;
+  }
+}
+
+function renderAutomationError(err) {
+  if (!els.automationView) return;
+  els.automationView.innerHTML = `
+    <div class="automation-block detector-warning">
+      <h3>Automation And Local AI failed to load</h3>
+      <p>${escapeHtml(err.message || String(err))}</p>
+      <p class="muted">Use http://127.0.0.1:8766, then hard refresh with Ctrl+F5. If this keeps happening, the visible error above is the failing stage.</p>
+      <button class="secondary" data-action="refresh-diagnostics">Retry</button>
+    </div>
+  `;
 }
 
 function renderAutomation(settings, jobs, watcher, storage, analytics, logs, tools, backups, schema, version, providers, privacy, corrections, playbooks, diagnostics, evaluation, plugins, localAi, knowledge, setup, prompts, tuning, modelAudit, sessionReport, detectorStatus, detectorDashboard, detectorCandidates, signals, parametersDashboard) {
