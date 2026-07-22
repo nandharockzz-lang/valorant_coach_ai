@@ -1228,7 +1228,7 @@ def read_round_score_health(tesseract: str, image: Image.Image, frame_path: Path
     }
 
 
-APP_VERSION = "0.25.0-local"
+APP_VERSION = "0.26.0-local"
 
 
 def app_version(db: Database) -> Dict[str, Any]:
@@ -1239,6 +1239,7 @@ def app_version(db: Database) -> Dict[str, Any]:
         "git": git,
         "schema": db.schema_info(),
         "changelog": [
+            "Document UI/UX architecture and recluster the match review page into Deaths, Coach, Player Status, and Diagnostics tabs.",
             "Add trust evidence receipts, marker lifecycle badges, OCR health checks, clear-unreviewed suggestions, and round-unknown reason text.",
             "Add Detector Model Dashboard with dataset readiness, class coverage targets, milestones, training progress, evaluation metrics, and runtime training controls.",
             "Keep Clip Coach local-model output as the primary review and show deterministic detector evidence as diagnostics instead of replacing weak reviews with generic fallback text.",

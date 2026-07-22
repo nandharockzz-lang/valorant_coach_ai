@@ -360,6 +360,74 @@ button:hover {
   gap: 10px;
 }
 
+.match-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.match-action-bar strong {
+  display: block;
+  margin-top: 3px;
+  color: #fff;
+  font-size: 14px;
+}
+
+.match-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.review-workspace {
+  display: grid;
+  gap: 12px;
+}
+
+.review-tabbar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-3);
+}
+
+.review-tab {
+  min-height: 38px;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.review-tab:hover,
+.review-tab.active {
+  background: rgba(255, 70, 85, 0.16);
+  color: #fff;
+}
+
+.review-tab-panel {
+  display: none;
+  min-width: 0;
+}
+
+.review-tab-panel.active {
+  display: grid;
+  gap: 14px;
+}
+
+.diagnostics-panel {
+  display: grid;
+  gap: 10px;
+}
+
 .coach-priorities {
   display: grid;
   gap: 10px;
@@ -697,6 +765,27 @@ video {
   color: #394553;
   font-size: 13px;
   line-height: 1.45;
+}
+
+.death-summary {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-3);
+}
+
+.death-summary strong {
+  color: #fff;
+  font-size: 13px;
+}
+
+.death-summary span {
+  color: #dce5f2;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .marker-badge {
@@ -2484,6 +2573,19 @@ button {
 
   .tab-panel.active {
     overflow: visible;
+  }
+
+  .match-action-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .match-action-buttons {
+    justify-content: flex-start;
+  }
+
+  .review-tabbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .evidence-grid,

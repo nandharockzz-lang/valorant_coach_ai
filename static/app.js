@@ -89,6 +89,15 @@ function activateDashboardTab(targetId) {
   });
 }
 
+function activateReviewTab(targetId) {
+  document.querySelectorAll(".review-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.tabTarget === targetId);
+  });
+  document.querySelectorAll(".review-tab-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.id === targetId);
+  });
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -2059,6 +2068,7 @@ function renderReport(report) {
   const playerStatus = renderPlayerStatusReport(report, coachMoments);
   const matchThemes = renderMatchThemes(report.match_themes || {});
   const manualMarkerForm = renderManualMarkerForm(match.id);
+  const diagnostics = renderReviewDiagnosticsPanel(match, manualMarkerForm, review, matchAnalyses);
 
   els.reportView.innerHTML = `
     <div id="jobProgressMount">${jobPanel}</div>
@@ -2073,34 +2083,87 @@ function renderReport(report) {
       </div>
       ${timeline}
     </section>
-    ${memoryStrip}
-    ${playerStatus}
-    ${matchThemes}
-    ${priorities}
-    ${guidedCoach}
-    ${suggestions}
-    ${coachMomentsView}
-    <section>
-      <div class="review-head">
-        <h3>Death Review</h3>
-        <span class="muted">Open the first 3, not every card.</span>
+    ${renderMatchActionBar(match.id, report)}
+    <section class="review-workspace">
+      <div class="review-tabbar" role="tablist" aria-label="Match review sections">
+        <button class="review-tab active" type="button" data-action="review-tab" data-tab-target="review-tab-deaths">Deaths</button>
+        <button class="review-tab" type="button" data-action="review-tab" data-tab-target="review-tab-coach">Coach</button>
+        <button class="review-tab" type="button" data-action="review-tab" data-tab-target="review-tab-status">Player Status</button>
+        <button class="review-tab" type="button" data-action="review-tab" data-tab-target="review-tab-diagnostics">Diagnostics</button>
       </div>
-      <div>${deaths || '<p class="muted">No deaths marked yet.</p>'}</div>
+      <div id="review-tab-deaths" class="review-tab-panel active">
+        ${suggestions}
+        <section>
+          <div class="review-head">
+            <h3>Death Review</h3>
+            <span class="muted">Open the first 3, not every card.</span>
+          </div>
+          <div>${deaths || '<p class="muted">No deaths marked yet.</p>'}</div>
+        </section>
+      </div>
+      <div id="review-tab-coach" class="review-tab-panel">
+        ${memoryStrip}
+        ${priorities}
+        ${guidedCoach}
+        ${matchThemes}
+        ${coachMomentsView}
+      </div>
+      <div id="review-tab-status" class="review-tab-panel">
+        ${playerStatus}
+      </div>
+      <div id="review-tab-diagnostics" class="review-tab-panel">
+        ${diagnostics}
+      </div>
     </section>
-    <details class="advanced-actions">
-      <summary>Manual tools and advanced analysis</summary>
-      ${manualMarkerForm}
-      ${review}
-      <section>
-        <h3>Detector Benchmarking</h3>
+  `;
+  attachVideoTimelineSync();
+}
+
+function renderMatchActionBar(matchId, report) {
+  const deathCount = (report.deaths || []).length;
+  const pendingCount = (report.suggestions || []).length;
+  const reviewedCount = (report.deaths || []).filter((death) => death.advice || death.local_ai_review).length;
+  return `
+    <section class="match-action-bar">
+      <div>
+        <span class="muted">Workflow</span>
+        <strong>${deathCount} marker(s), ${pendingCount} candidate(s), ${reviewedCount} reviewed</strong>
+      </div>
+      <div class="match-action-buttons">
+        <button data-action="suggest" data-id="${matchId}">Find Deaths</button>
+        <button class="secondary" data-action="guided-coach" data-id="${matchId}">Match Coach Plan</button>
+        <button class="secondary" data-action="ocr-health" data-id="${matchId}">OCR Health</button>
+        <button class="ghost" data-action="write" data-id="${matchId}">Write Report</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderReviewDiagnosticsPanel(match, manualMarkerForm, review, matchAnalyses) {
+  return `
+    <section class="diagnostics-panel">
+      <div class="review-head">
+        <h3>Diagnostics And Advanced Tools</h3>
+        <span class="muted">Use these when the coach output or detector behavior needs debugging.</span>
+      </div>
+      <details class="advanced-actions" open>
+        <summary>Manual markers and OCR health</summary>
+        ${manualMarkerForm}
+      </details>
+      <details class="advanced-actions">
+        <summary>Match review receipt</summary>
+        ${review}
+      </details>
+      <details class="advanced-actions">
+        <summary>Detector benchmarking</summary>
         <div class="add-death">
           <label>Missed death sec <input id="benchmarkMissedTs" type="number" min="0" step="0.1" placeholder="120.5" /></label>
           <label class="wide">Note <input id="benchmarkNote" type="text" placeholder="Why the detector missed this death" /></label>
           <button class="secondary" data-action="benchmark-missed" data-id="${match.id}">Mark Missed Death</button>
         </div>
-      </section>
-      <section>
-        <h3>Calibration Overlay</h3>
+      </details>
+      <details class="advanced-actions">
+        <summary>Calibration overlay</summary>
         <div class="overlay-tools">
           <label>Region
             <select id="overlayRegion">${CALIBRATION_REGIONS.map(([key, label]) => `<option value="${escapeAttr(key)}" ${key === selectedCalibrationRegion ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select>
@@ -2108,11 +2171,13 @@ function renderReport(report) {
           <button class="secondary" data-action="toggle-calibration-overlay">Show / Hide Overlay</button>
           <button class="secondary" data-action="save-overlay-calibration">Save Overlay</button>
         </div>
-      </section>
-      ${matchAnalyses}
-    </details>
+      </details>
+      <details class="advanced-actions">
+        <summary>Visual and OCR analysis receipts</summary>
+        ${matchAnalyses}
+      </details>
+    </section>
   `;
-  attachVideoTimelineSync();
 }
 
 function renderCoachMemoryStrip(coach) {
@@ -2768,7 +2833,7 @@ function renderSuggestions(suggestions) {
   if (!suggestions.length) {
     return `
       <section class="suggestion-section empty">
-        <h3>Suggested Deaths</h3>
+        <h3>Death Candidates</h3>
         <p class="muted">No pending death candidates. Confirmed markers are shown in Death Review.</p>
       </section>
     `;
@@ -2802,7 +2867,7 @@ function renderSuggestions(suggestions) {
   return `
     <section class="suggestion-section">
       <div class="review-head">
-        <h3>Pending Death Candidates</h3>
+        <h3>Death Candidates</h3>
         <span class="muted">${suggestions.length} to verify</span>
         <button class="secondary" data-action="clear-pending-suggestions" data-id="${currentMatchId}">Clear Unreviewed</button>
       </div>
@@ -2816,7 +2881,7 @@ function renderGuidedCoach(row, matchId) {
   if (!coach) {
     return `
       <details class="guided-coach empty fold-panel">
-        <summary>Coach Mode</summary>
+        <summary>Match Coach Plan</summary>
         <div>
           <p class="muted">Generate a short review order after markers are confirmed.</p>
         </div>
@@ -2839,7 +2904,7 @@ function renderGuidedCoach(row, matchId) {
   return `
     <details class="guided-coach fold-panel">
       <summary>
-        <span>Coach Mode</span>
+        <span>Match Coach Plan</span>
         <strong>${Math.round(Number(coach.confidence || 0) * 100)}%</strong>
       </summary>
       <p>${escapeHtml(coach.summary || "")}</p>
@@ -2900,7 +2965,7 @@ function renderMatchContextPanel(context, death) {
   const manual = context.manual_correction || {};
   const extraction = renderContextExtraction(context.context_extraction || {});
   return `
-    <details class="match-context-panel ${context.ready_for_knowledge ? "ready" : "needs-work"}" ${context.ready_for_knowledge ? "" : "open"}>
+    <details class="match-context-panel ${context.ready_for_knowledge ? "ready" : "needs-work"}">
       <summary>
         <span>Match Context</span>
         <strong>${escapeHtml(context.known_count || 0)}/${escapeHtml(context.total_count || 0)} known</strong>
@@ -2908,7 +2973,7 @@ function renderMatchContextPanel(context, death) {
       <p class="muted">${escapeHtml(context.summary || "Correct map, agent, and round to make knowledge retrieval specific.")}</p>
       <div class="context-chip-row">${chips}</div>
       ${extraction}
-      <details class="context-editor-panel" ${context.ready_for_knowledge ? "" : "open"}>
+      <details class="context-editor-panel">
         <summary>Correct context</summary>
         <div class="context-editor">
           <label>Map <input data-field="context_map" type="text" value="${escapeAttr(field("map").value || manual.map || "")}" placeholder="Ascent" /></label>
@@ -2966,6 +3031,7 @@ function renderDeathCard(death) {
   const annotations = renderAnnotations(death.annotations || []);
   const contextPanel = renderMatchContextPanel(death.match_context || {}, death);
   const lifecycle = renderMarkerLifecycle(death.marker_lifecycle || {});
+  const coachSummary = renderDeathCoachSummary(death);
   return `
     <article class="death-card" data-death-id="${death.id}">
       <div class="death-card-header">
@@ -2978,6 +3044,13 @@ function renderDeathCard(death) {
         <button data-action="coach-clip" data-id="${death.id}">${death.advice || death.local_ai_review ? "Refresh Coach" : "Coach This Clip"}</button>
       </div>
       ${death.notes ? `<p class="death-note">${escapeHtml(shortenText(death.notes, 180))}</p>` : ""}
+      ${coachSummary}
+      <details class="advanced-actions">
+        <summary>Coach output and context</summary>
+        ${contextPanel}
+        ${advice}
+        ${localAi}
+      </details>
       <details class="evidence-panel">
         <summary>Evidence and gaps</summary>
         <div class="evidence-body" data-evidence-target="${death.id}">
@@ -2985,10 +3058,8 @@ function renderDeathCard(death) {
           <button class="secondary" data-action="load-evidence" data-id="${death.id}">Load Evidence</button>
         </div>
       </details>
-      ${contextPanel}
-      ${advice}
       <details class="advanced-actions">
-        <summary>Edit marker and advanced tools</summary>
+        <summary>Edit marker and diagnostics</summary>
         <div class="row">
           <button class="secondary" data-action="advice" data-id="${death.id}">Normal Advice Only</button>
           <button class="secondary" data-action="local-ai-review" data-id="${death.id}">Clip Coach Only</button>
@@ -3008,7 +3079,6 @@ function renderDeathCard(death) {
         ${vision}
         ${keyframes}
         ${understanding}
-        ${localAi}
         ${renderDetectorAnnotationForm(death)}
         ${annotations}
         <div class="row">
@@ -3042,6 +3112,24 @@ function renderDeathCard(death) {
         </div>
       </details>
     </article>
+  `;
+}
+
+function renderDeathCoachSummary(death) {
+  const localPayload = death.local_ai_review?.payload || {};
+  const advice = death.advice || {};
+  const summary = localPayload.summary || advice.what_happened || advice.better_play || "";
+  if (!summary) {
+    return '<p class="death-summary muted">No coach review yet. Use Coach This Clip when this marker is worth reviewing.</p>';
+  }
+  const confidence = localPayload.confidence !== undefined
+    ? ` · ${Math.round(Number(localPayload.confidence || 0) * 100)}%`
+    : "";
+  return `
+    <div class="death-summary">
+      <strong>${localPayload.summary ? "Clip Coach" : "Advice"}${confidence}</strong>
+      <span>${escapeHtml(shortenText(summary, 180))}</span>
+    </div>
   `;
 }
 
@@ -3688,6 +3776,7 @@ function renderEvidenceResult(payload) {
 }
 
 async function runOcrHealthCheck(matchId) {
+  activateReviewTab("review-tab-diagnostics");
   const player = document.querySelector("#vodPlayer");
   const timeInput = document.querySelector("#ocrHealthTimestamp");
   const regionInput = document.querySelector("#ocrHealthRegions");
@@ -4037,6 +4126,9 @@ els.reportView.addEventListener("click", (event) => {
   const action = button.dataset.action;
   if (action === "cancel-job") cancelJob(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "jump") jumpTo(button.dataset.ts);
+  if (action === "review-tab") activateReviewTab(button.dataset.tabTarget);
+  if (action === "suggest") suggestDeaths(button.dataset.id).catch((err) => setStatus(err.message));
+  if (action === "write") writeReport(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "guided-coach") runGuidedCoach(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "preset-label") applyPreset(button);
   if (action === "accept-suggestion") acceptSuggestion(button).catch((err) => setStatus(err.message));
