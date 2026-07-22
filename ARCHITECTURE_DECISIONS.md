@@ -132,6 +132,17 @@ Current flow:
 - Parameter labels are stored locally and power readiness/accuracy reporting.
 - Future vision/VLM parameters should reuse the same definition/read/label model instead of creating separate opaque dashboards.
 
+### ADR-010: Progressive Tool Disclosure
+
+**Decision:** Complex tools render in the main workspace and use progressive disclosure. The left sidebar is limited to navigation, compact status, and tool launchers.
+
+**Rationale:** The app accumulated too many buttons and raw controls in the left panel, making the coaching workflow feel overwhelming and unintelligent. Tool surfaces need enough space and should reveal controls only when they are relevant to the current step.
+
+**Implications:**
+- Automation, Local AI setup, Parameter Trainer, detector training, diagnostics, and admin controls should not all render inside the sidebar.
+- Parameter Trainer starts with frame selection, then extraction, then corrections; raw rule config is advanced.
+- New tools must be assigned to a cluster: Review Workflow, AI Coach Setup, Data Quality, Diagnostics, or Admin.
+
 ## Skill Usage
 
 - Use `senior-architect` when making architecture decisions, ADRs, major trade-offs, or system design changes.

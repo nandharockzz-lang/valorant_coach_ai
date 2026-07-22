@@ -1291,6 +1291,170 @@ video {
   text-align: right;
 }
 
+.tool-sidebar-home {
+  display: grid;
+  gap: 10px;
+}
+
+.tool-launch-list {
+  display: grid;
+  gap: 8px;
+}
+
+.tool-launch {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 10px;
+  text-align: left;
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.tool-launch strong,
+.tool-launch small {
+  display: block;
+}
+
+.tool-launch small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.tool-launch em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  text-align: right;
+}
+
+.tool-workspace {
+  display: grid;
+  gap: 16px;
+}
+
+.tool-workspace-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tool-workspace-head h2 {
+  margin: 2px 0 0;
+}
+
+.tool-workspace-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f8fa;
+}
+
+.tool-workspace-tabs button {
+  min-height: 32px;
+  padding: 7px 10px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.tool-workspace-tabs button.active {
+  background: var(--red);
+  color: #fff;
+}
+
+.tool-card-grid,
+.tool-section-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tool-home-card,
+.tool-section {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.tool-home-card h3,
+.tool-section h3 {
+  margin: 0;
+}
+
+.tool-home-card p,
+.tool-section p {
+  margin: 0;
+}
+
+.tool-section.full-width,
+.full-width {
+  grid-column: 1 / -1;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.trainer-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.trainer-steps li {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f8fa;
+  color: var(--muted);
+}
+
+.trainer-steps li.active {
+  border-color: rgba(14, 124, 117, 0.35);
+  background: rgba(14, 124, 117, 0.08);
+  color: var(--ink);
+}
+
+.trainer-steps span {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.parameter-corrections {
+  display: grid;
+  gap: 8px;
+}
+
+.parameter-correction-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(70px, auto) minmax(120px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7f8fa;
+}
+
 .parameter-trainer {
   gap: 12px;
 }
@@ -2433,9 +2597,29 @@ body {
 .parameter-card,
 .parameter-value-row,
 .parameter-raw,
-.parameter-live-result {
+.parameter-live-result,
+.tool-launch,
+.tool-home-card,
+.tool-section,
+.tool-workspace-tabs,
+.trainer-steps li,
+.parameter-correction-row {
   background: rgba(255, 255, 255, 0.035);
   border-color: rgba(255, 255, 255, 0.08);
+}
+
+.tool-launch {
+  color: var(--ink);
+}
+
+.tool-workspace-tabs button.active {
+  background: var(--red);
+  color: #fff;
+}
+
+.trainer-steps li.active {
+  background: rgba(49, 198, 183, 0.10);
+  border-color: rgba(49, 198, 183, 0.24);
 }
 
 .parameter-live-result img {
@@ -2754,6 +2938,17 @@ button {
 
   .review-tabbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tool-card-grid,
+  .tool-section-grid,
+  .trainer-steps,
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .parameter-correction-row {
+    grid-template-columns: 1fr;
   }
 
   .evidence-grid,

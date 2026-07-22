@@ -23,6 +23,8 @@ let activeCoachJobId = null;
 let jobPollTimer = null;
 const completedJobIds = new Set();
 let latestCoachDashboard = null;
+let latestAutomationData = null;
+let activeToolId = "";
 let currentCalibration = {};
 const CALIBRATION_REGIONS = [
   ["hud_top", "Top HUD"],
@@ -269,6 +271,57 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
     : "Primary death detector needs Tesseract OCR. Until then, Find Deaths uses only fallback visual signals.";
   const promptOptions = Object.keys(prompts.templates || {}).sort().map((key) => `<option value="${escapeAttr(key)}" ${prompts.active === key ? "selected" : ""}>${escapeHtml(key)}</option>`).join("");
   const knowledgeCounts = Object.entries((knowledge || {}).counts || {}).map(([key, value]) => `<span class="tag">${escapeHtml(key)} ${escapeHtml(value)}</span>`).join("");
+  latestAutomationData = {
+    settings,
+    jobs,
+    watcher,
+    storage,
+    analytics,
+    logs,
+    tools,
+    backups,
+    schema,
+    version,
+    providers,
+    privacy,
+    corrections,
+    playbooks,
+    diagnostics,
+    evaluation,
+    plugins,
+    localAi,
+    knowledge,
+    setup,
+    prompts,
+    tuning,
+    modelAudit,
+    sessionReport,
+    detectorStatus,
+    detectorDashboard,
+    detectorCandidates,
+    signals,
+    parametersDashboard,
+    jobRows,
+    toolRows,
+    logRows,
+    backupOptions,
+    providerRows,
+    pluginRows,
+    diagnosticRows,
+    correctionRows,
+    playbookOptions,
+    chartBars,
+    changelog,
+    setupRows,
+    tesseractReady,
+    detectorReadiness,
+    promptOptions,
+    knowledgeCounts,
+  };
+  els.automationView.innerHTML = renderToolsSidebar(latestAutomationData);
+  window.__coachPlaybooks = playbooks;
+  window.__coachPrompts = prompts.templates || {};
+  return;
   els.automationView.innerHTML = `
     <div class="automation-block">
       <h3>Setup Wizard</h3>
@@ -535,6 +588,385 @@ function renderAutomation(settings, jobs, watcher, storage, analytics, logs, too
   `;
   window.__coachPlaybooks = playbooks;
   window.__coachPrompts = prompts.templates || {};
+}
+
+function renderToolsSidebar(data) {
+  const param = data.parametersDashboard || {};
+  const detector = data.detectorDashboard || {};
+  const jobsRunning = (data.jobs || []).filter((job) => ["queued", "running"].includes(job.status)).length;
+  const localAi = data.localAi || {};
+  return `
+    <div class="tool-sidebar-home">
+      <p class="${data.tesseractReady ? "detector-ready" : "detector-warning"}">${escapeHtml(data.detectorReadiness || "")}</p>
+      <button data-action="open-tool" data-tool="tools-home">Open Tools Workspace</button>
+      <div class="tool-launch-list">
+        ${renderToolLaunch("ai-setup", "AI Coach Setup", localAi.model ? `Model ${localAi.model}` : "Configure LM Studio/Ollama", "Local model, review mode, knowledge base.")}
+        ${renderToolLaunch("data-quality", "Data Quality", `Parameters ${param.readiness_percent || 0}% · Detector ${detector.readiness_percent || 0}%`, "OCR values, regions, detector labels.")}
+        ${renderToolLaunch("diagnostics", "Diagnostics", `${jobsRunning} running job(s)`, "Jobs, logs, benchmarks, receipts.")}
+        ${renderToolLaunch("admin", "Admin", "Storage, privacy, backups", "Maintenance and exports.")}
+      </div>
+      <details class="advanced-actions">
+        <summary>Quick setup</summary>
+        <label>Recording folder <input id="setupRecordingDir" type="text" value="${escapeAttr(data.settings.recording_dir || "")}" /></label>
+        <label>In-game name <input id="playerName" type="text" value="${escapeAttr(data.settings.player_name || "SicaJR")}" placeholder="SicaJR" /></label>
+        <button data-action="save-setup">Save Setup</button>
+      </details>
+    </div>
+  `;
+}
+
+function renderToolLaunch(tool, title, meta, detail) {
+  return `
+    <button class="tool-launch" data-action="open-tool" data-tool="${escapeAttr(tool)}">
+      <span>
+        <strong>${escapeHtml(title)}</strong>
+        <small>${escapeHtml(detail)}</small>
+      </span>
+      <em>${escapeHtml(meta)}</em>
+    </button>
+  `;
+}
+
+function openTool(toolId) {
+  activeToolId = toolId || "tools-home";
+  renderToolWorkspace(activeToolId);
+}
+
+function renderToolWorkspace(toolId = "tools-home") {
+  const data = latestAutomationData;
+  if (!data) {
+    setStatus("Tools are still loading.", { state: "busy" });
+    return;
+  }
+  const title = {
+    "tools-home": "Tools Workspace",
+    "ai-setup": "AI Coach Setup",
+    "data-quality": "Data Quality",
+    diagnostics: "Diagnostics",
+    admin: "Admin",
+  }[toolId] || "Tools Workspace";
+  const body = {
+    "ai-setup": renderAiCoachSetupWorkspace,
+    "data-quality": renderDataQualityWorkspace,
+    diagnostics: renderDiagnosticsWorkspace,
+    admin: renderAdminWorkspace,
+    "tools-home": renderToolsHomeWorkspace,
+  }[toolId] || renderToolsHomeWorkspace;
+  els.reportView.innerHTML = `
+    <section class="tool-workspace">
+      <div class="tool-workspace-head">
+        <div>
+          <span class="muted">Tools</span>
+          <h2>${escapeHtml(title)}</h2>
+        </div>
+        <button class="secondary" data-action="open-tool" data-tool="tools-home">Tools Home</button>
+      </div>
+      ${renderToolWorkspaceNav(toolId)}
+      ${body(data)}
+    </section>
+  `;
+}
+
+function renderToolWorkspaceNav(active) {
+  const items = [
+    ["tools-home", "Home"],
+    ["ai-setup", "AI Coach Setup"],
+    ["data-quality", "Data Quality"],
+    ["diagnostics", "Diagnostics"],
+    ["admin", "Admin"],
+  ];
+  return `
+    <div class="tool-workspace-tabs">
+      ${items.map(([tool, label]) => `<button class="${active === tool ? "active" : ""}" data-action="open-tool" data-tool="${tool}">${label}</button>`).join("")}
+    </div>
+  `;
+}
+
+function renderToolsHomeWorkspace(data) {
+  return `
+    <div class="tool-card-grid">
+      ${renderToolHomeCard("ai-setup", "AI Coach Setup", "Connect LM Studio/Ollama, choose review mode, manage VALORANT knowledge.", data.localAi.model || "No model selected")}
+      ${renderToolHomeCard("data-quality", "Data Quality", "Train OCR parameters, check regions, and manage detector labels.", `${data.parametersDashboard.readiness_percent || 0}% parameter readiness`)}
+      ${renderToolHomeCard("diagnostics", "Diagnostics", "Inspect jobs, tool health, logs, benchmarks, and analysis receipts.", `${(data.jobs || []).length} recent job(s)`)}
+      ${renderToolHomeCard("admin", "Admin", "Backups, privacy, storage cleanup, imports, exports, and release information.", data.version.version || "local")}
+    </div>
+  `;
+}
+
+function renderToolHomeCard(tool, title, detail, meta) {
+  return `
+    <article class="tool-home-card">
+      <span class="tag">${escapeHtml(meta)}</span>
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(detail)}</p>
+      <button data-action="open-tool" data-tool="${escapeAttr(tool)}">Open</button>
+    </article>
+  `;
+}
+
+function renderAiCoachSetupWorkspace(data) {
+  const localAi = data.localAi || {};
+  return `
+    <div class="tool-section-grid">
+      <section class="tool-section">
+        <h3>Local AI Connection</h3>
+        <label>Provider
+          <select id="localAiProvider">
+            ${(localAi.providers || []).map((item) => `<option value="${escapeAttr(item.id)}" ${localAi.provider === item.id ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+          </select>
+        </label>
+        <label>Model <input id="localAiModel" type="text" value="${escapeAttr(localAi.model || "")}" placeholder="qwen/qwen2.5-vl-7b" /></label>
+        <label>Base URL <input id="localAiBaseUrl" type="text" value="${escapeAttr(localAi.base_url || "")}" placeholder="http://127.0.0.1:1234" /></label>
+        <label>Custom command <input id="localAiCommand" type="text" value="${escapeAttr(localAi.command || "")}" placeholder="python C:\\path\\review_clip.py" /></label>
+        <div class="row">
+          <button class="secondary" data-action="use-lmstudio-defaults">Use LM Studio Defaults</button>
+          <button class="secondary" data-action="test-local-ai">Test Local AI</button>
+          <button data-action="save-local-ai">Save Local AI</button>
+        </div>
+        <div id="localAiTestResult" class="muted"></div>
+      </section>
+      <section class="tool-section">
+        <h3>Review Mode</h3>
+        <label>Purpose
+          <select id="localAiPurpose">
+            <option value="coach" ${localAi.purpose === "coach" ? "selected" : ""}>Gameplay coach</option>
+            <option value="ocr" ${localAi.purpose === "ocr" ? "selected" : ""}>OCR / HUD reader</option>
+          </select>
+        </label>
+        <label>Review mode
+          <select id="localAiReviewMode">
+            <option value="contact" ${localAi.review_mode === "contact" ? "selected" : ""}>Contact: final 5s</option>
+            <option value="burst" ${localAi.review_mode === "burst" ? "selected" : ""}>Burst: dense final 5s</option>
+            <option value="hybrid" ${localAi.review_mode === "hybrid" ? "selected" : ""}>Hybrid</option>
+            <option value="context" ${localAi.review_mode === "context" ? "selected" : ""}>Context: 10s</option>
+            <option value="adaptive" ${localAi.review_mode === "adaptive" ? "selected" : ""}>Adaptive</option>
+          </select>
+        </label>
+        <div class="settings-grid compact">
+          <label>Window seconds <input id="localAiReviewWindow" type="number" min="5" max="20" step="1" value="${escapeAttr(localAi.review_window_seconds || "10")}" /></label>
+          <label>FPS override <input id="localAiReviewFps" type="number" min="1" max="20" step="1" value="${escapeAttr(localAi.review_fps || "")}" placeholder="mode default" /></label>
+          <label>Context limit <input id="localAiContextLimit" type="number" min="4096" max="131072" step="512" value="${escapeAttr(localAi.context_limit || "8192")}" /></label>
+          <label>Image tokens <input id="localAiImageTokenEstimate" type="number" min="256" max="4096" step="64" value="${escapeAttr(localAi.image_token_estimate || "900")}" /></label>
+        </div>
+        <button data-action="save-local-ai">Save Review Settings</button>
+      </section>
+      <section class="tool-section">
+        <h3>Knowledge Base</h3>
+        <p>${data.knowledge.ready ? escapeHtml(data.knowledge.summary || "Knowledge base ready.") : "Build the VALORANT knowledge base before relying on game-specific model context."}</p>
+        <p class="muted">Last built ${escapeHtml(data.knowledge.last_built_at || "never")} · ${escapeHtml(data.knowledge.snippet_count || 0)} snippet(s)</p>
+        <div class="tag-row">${data.knowledgeCounts || '<span class="tag">not built</span>'}</div>
+        <label>Search <input id="knowledgeSearchText" type="text" placeholder="Ascent Jett dry peek crosshair" /></label>
+        <div class="row">
+          <button class="secondary" data-action="rebuild-knowledge">Rebuild Knowledge</button>
+          <button class="secondary" data-action="search-knowledge">Search Knowledge</button>
+        </div>
+        <div id="knowledgeResults" class="knowledge-results muted"></div>
+      </section>
+      <section class="tool-section">
+        <h3>Prompt Templates</h3>
+        <label>Template <select id="promptTemplateSelect">${data.promptOptions}</select></label>
+        <label>Key <input id="promptKey" type="text" placeholder="duelist-custom" /></label>
+        <label>Name <input id="promptName" type="text" placeholder="My review prompt" /></label>
+        <label>Role <input id="promptRole" type="text" placeholder="duelist" /></label>
+        <label>Prompt <textarea id="promptText" rows="5" placeholder="Use {round}, {timestamp}, {labels}, {notes}"></textarea></label>
+        <div class="row">
+          <button class="secondary" data-action="load-prompt">Load</button>
+          <button data-action="save-prompt">Save Prompt</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderDataQualityWorkspace(data) {
+  return `
+    <div class="tool-section-grid">
+      ${renderParameterTrainerWizard(data.parametersDashboard || {})}
+      <section class="tool-section">
+        <h3>OCR Regions</h3>
+        <p class="muted">Open a match, move the video to a clear HUD frame, then capture and adjust OCR regions from the review Diagnostics tab.</p>
+        <div class="row">
+          <button class="secondary" data-action="ocr-health" data-id="${escapeAttr(currentMatchId || "")}">Check OCR Regions</button>
+          <button class="secondary" data-action="open-tool" data-tool="diagnostics">Open Diagnostics</button>
+        </div>
+      </section>
+      <div class="full-width">
+        ${renderTrainedDetectorPanel(data.detectorStatus || {}, data.detectorDashboard || {}, data.detectorCandidates || {}, data.signals || {})}
+      </div>
+    </div>
+  `;
+}
+
+function renderParameterTrainerWizard(dashboard) {
+  const reads = (dashboard.parameters || []).filter((item) => item.latest_read);
+  const hasRead = reads.length > 0;
+  const summaryRows = (hasRead ? reads : (dashboard.parameters || []).slice(0, 6)).map((parameter) => {
+    const read = parameter.latest_read || {};
+    const value = read.value !== null && read.value !== undefined && read.value !== "" ? read.value : "unknown";
+    return `
+      <tr>
+        <td>${escapeHtml(parameter.label || parameter.parameter_key)}</td>
+        <td>${escapeHtml(value)}</td>
+        <td>${escapeHtml(read.status || parameter.status || "not read")}</td>
+        <td>${escapeHtml(Math.round(Number(read.confidence || 0) * 100))}%</td>
+      </tr>
+    `;
+  }).join("");
+  const correctionRows = reads.map((parameter) => {
+    const read = parameter.latest_read || {};
+    return `
+      <div class="parameter-correction-row">
+        <span>${escapeHtml(parameter.label || parameter.parameter_key)}</span>
+        <strong>${escapeHtml(read.value ?? "unknown")}</strong>
+        <input data-parameter-expected="${escapeAttr(parameter.parameter_key)}" type="text" placeholder="Correct value" />
+        <button class="secondary" data-action="save-parameter-label" data-key="${escapeAttr(parameter.parameter_key)}" data-read-id="${escapeAttr(read.id || "")}" data-observed="${escapeAttr(read.value ?? "")}" data-match="${escapeAttr(read.match_id || currentMatchId || "")}" data-ts="${escapeAttr(read.timestamp ?? "")}" data-frame="${escapeAttr(read.frame_id || "")}">Save</button>
+      </div>
+    `;
+  }).join("");
+  return `
+    <section class="tool-section full-width parameter-wizard">
+      <div class="review-head">
+        <div>
+          <h3>Parameter Trainer</h3>
+          <p class="muted">${escapeHtml(dashboard.summary || "Train OCR/HUD values through a guided read-correct-tune flow.")}</p>
+        </div>
+        <span class="tag">${escapeHtml(dashboard.readiness_percent || 0)}% trained</span>
+      </div>
+      <ol class="trainer-steps">
+        <li class="active"><strong>1. Select Frame</strong><span>Use an open match and the current video time.</span></li>
+        <li class="${hasRead ? "active" : ""}"><strong>2. Read Values</strong><span>Extract configured HUD parameters.</span></li>
+        <li class="${hasRead ? "active" : ""}"><strong>3. Correct Values</strong><span>Save labels only for wrong or important reads.</span></li>
+        <li><strong>4. Advanced Tuning</strong><span>Rules stay hidden until needed.</span></li>
+      </ol>
+      <div class="parameter-live-controls">
+        <label>Match ID <input id="parameterMatchId" type="number" min="1" value="${escapeAttr(currentMatchId || "")}" placeholder="Open a match" /></label>
+        <label>Timestamp <input id="parameterTimestamp" type="text" placeholder="blank = current video time" /></label>
+        <button data-action="extract-parameters">Read Current Frame</button>
+      </div>
+      <div id="parameterExtractResult" class="parameter-extract-result"></div>
+      <table class="mini-table">
+        <thead><tr><th>Parameter</th><th>Value</th><th>Status</th><th>Confidence</th></tr></thead>
+        <tbody>${summaryRows || '<tr><td colspan="4">No parameters registered.</td></tr>'}</tbody>
+      </table>
+      ${hasRead ? `<section class="parameter-corrections"><h4>Correct Values</h4>${correctionRows}</section>` : '<p class="muted">Read a frame first. Correction and rule controls stay hidden until there is evidence to review.</p>'}
+      <details class="advanced-actions">
+        <summary>Advanced rule tuning</summary>
+        <div class="parameter-grid">${(dashboard.parameters || []).map((parameter) => renderParameterRuleCard(parameter)).join("")}</div>
+      </details>
+    </section>
+  `;
+}
+
+function renderParameterRuleCard(parameter) {
+  const configJson = JSON.stringify(parameter.config || {}, null, 2);
+  return `
+    <article class="parameter-card">
+      <div class="parameter-card-head">
+        <div>
+          <strong>${escapeHtml(parameter.label || parameter.parameter_key)}</strong>
+          <span class="muted">${escapeHtml(parameter.parameter_key || "")}</span>
+        </div>
+        <span class="tag">${escapeHtml(parameter.status || "unknown")}</span>
+      </div>
+      <label>Label <input data-parameter-label="${escapeAttr(parameter.parameter_key)}" type="text" value="${escapeAttr(parameter.label || "")}" /></label>
+      <label>Region <input data-parameter-region="${escapeAttr(parameter.parameter_key)}" type="text" value="${escapeAttr(parameter.source_region || "")}" /></label>
+      <label>Extractor <input data-parameter-extractor="${escapeAttr(parameter.parameter_key)}" type="text" value="${escapeAttr(parameter.extractor_type || "")}" /></label>
+      <label>Dependencies <input data-parameter-deps="${escapeAttr(parameter.parameter_key)}" type="text" value="${escapeAttr((parameter.dependencies || []).join(","))}" /></label>
+      <label>Config JSON <textarea data-parameter-config="${escapeAttr(parameter.parameter_key)}" rows="6">${escapeHtml(configJson)}</textarea></label>
+      <button data-action="save-parameter-config" data-key="${escapeAttr(parameter.parameter_key)}">Save Rule</button>
+    </article>
+  `;
+}
+
+function renderDiagnosticsWorkspace(data) {
+  return `
+    <div class="tool-section-grid">
+      <section class="tool-section">
+        <h3>Jobs</h3>
+        <ul class="compact-list">${data.jobRows || "<li>No jobs yet.</li>"}</ul>
+      </section>
+      <section class="tool-section">
+        <h3>Tool Health</h3>
+        <ul class="compact-list">${data.toolRows}</ul>
+      </section>
+      <section class="tool-section">
+        <h3>Diagnostics</h3>
+        <p>${escapeHtml(data.diagnostics.summary || "")}</p>
+        <ul class="compact-list">${data.diagnosticRows}</ul>
+        <button class="secondary" data-action="refresh-diagnostics">Refresh</button>
+      </section>
+      <section class="tool-section">
+        <h3>Benchmark</h3>
+        <p>${escapeHtml(data.evaluation.summary || "")}</p>
+        <button class="secondary" data-action="refresh-evaluation">Run Benchmark</button>
+      </section>
+      <section class="tool-section">
+        <h3>Advanced Search</h3>
+        <label>Text <input id="searchText" type="text" placeholder="notes, map, agent, label" /></label>
+        <label>Label <input id="searchLabel" type="text" placeholder="dry peek" /></label>
+        <label>Phase <input id="searchPhase" type="text" placeholder="late round" /></label>
+        <label>Min confidence <input id="searchConfidence" type="number" min="0" max="1" step="0.05" value="0" /></label>
+        <label>Clip <select id="searchClip"><option value="">Any</option><option value="with_clip">With clip</option><option value="without_clip">Without clip</option></select></label>
+        <button class="secondary" data-action="search-deaths">Search Deaths</button>
+        <div id="searchResults" class="search-results muted"></div>
+      </section>
+      <section class="tool-section">
+        <h3>Logs</h3>
+        <ul class="compact-list">${data.logRows || "<li>No logs yet.</li>"}</ul>
+      </section>
+    </div>
+  `;
+}
+
+function renderAdminWorkspace(data) {
+  const bytes = (value) => `${Math.round(Number(value || 0) / 1024 / 1024)} MB`;
+  return `
+    <div class="tool-section-grid">
+      <section class="tool-section">
+        <h3>Storage</h3>
+        <p class="muted">clips ${bytes(data.storage.clips)} · reports ${bytes(data.storage.reports)} · frames ${bytes((data.storage.vision || 0) + (data.storage.deep || 0))}</p>
+        <div class="row">
+          <button class="danger" data-action="cleanup-frames">Delete Frames</button>
+          <button class="danger" data-action="cleanup-clips">Delete Clips</button>
+          <button class="danger" data-action="retention">Apply Retention</button>
+        </div>
+      </section>
+      <section class="tool-section">
+        <h3>Backups</h3>
+        <button class="secondary" data-action="backup-db">Backup DB</button>
+        <label>Restore <select id="backupPath">${data.backupOptions || "<option value=''>No backups</option>"}</select></label>
+        <button class="danger" data-action="restore-db">Restore DB</button>
+      </section>
+      <section class="tool-section">
+        <h3>Privacy</h3>
+        <p>Mode ${escapeHtml(data.privacy.privacy_mode || "local-only")} · uploads ${escapeHtml(data.privacy.network_uploads || "disabled")}</p>
+        <div class="row">
+          <button class="secondary" data-action="privacy-export">Export Data</button>
+          <button class="secondary" data-action="debug-bundle">Debug Bundle</button>
+          <button class="danger" data-action="privacy-wipe-frames">Wipe Frames</button>
+          <button class="danger" data-action="privacy-wipe-clips">Wipe Clips</button>
+        </div>
+      </section>
+      <section class="tool-section">
+        <h3>Release</h3>
+        <p><strong>${escapeHtml(data.version.version || "local")}</strong> · ${escapeHtml(data.version.build || "dev")}</p>
+        <ul class="compact-list">${data.changelog}</ul>
+      </section>
+      <section class="tool-section">
+        <h3>Exports / Imports</h3>
+        <button class="secondary" data-action="export-report-json">Export Report JSON</button>
+        <button class="secondary" data-action="export-report-html">Export Report HTML</button>
+        <label>Stats file path <input id="statsImportPath" type="text" placeholder="C:\\path\\tracker_stats.json" /></label>
+        <button class="secondary" data-action="import-stats">Import Stats</button>
+      </section>
+      <section class="tool-section">
+        <h3>Memory</h3>
+        <button class="secondary" data-action="export-memory">Export</button>
+        <label>Import JSON <input id="memoryImport" type="file" accept="application/json" /></label>
+        <button class="secondary" data-action="import-memory">Import</button>
+      </section>
+    </div>
+  `;
 }
 
 function renderProviderRows(providers) {
@@ -809,6 +1241,7 @@ async function extractParameters() {
   if (mount) mount.innerHTML = renderParameterExtractResult(payload);
   setStatus(payload.message || "Parameter extraction complete.");
   await loadAutomation();
+  if (activeToolId) renderToolWorkspace(activeToolId);
 }
 
 function renderParameterExtractResult(payload) {
@@ -856,6 +1289,7 @@ async function saveParameterLabel(button) {
   });
   setStatus(`Saved ${key} label.`);
   await loadAutomation();
+  if (activeToolId) renderToolWorkspace(activeToolId);
 }
 
 async function saveParameterConfig(button) {
@@ -885,6 +1319,7 @@ async function saveParameterConfig(button) {
   });
   setStatus(`Saved ${key} rule.`);
   await loadAutomation();
+  if (activeToolId) renderToolWorkspace(activeToolId);
 }
 
 async function cancelJob(id) {
@@ -3990,7 +4425,14 @@ function renderEvidenceResult(payload) {
 }
 
 async function runOcrHealthCheck(matchId) {
-  activateReviewTab("review-tab-diagnostics");
+  const targetMatch = matchId || currentMatchId;
+  if (!targetMatch) {
+    setStatus("Open a match before checking OCR regions.", { state: "error" });
+    return;
+  }
+  if (document.querySelector("#review-tab-diagnostics")) {
+    activateReviewTab("review-tab-diagnostics");
+  }
   const player = document.querySelector("#vodPlayer");
   const timeInput = document.querySelector("#ocrHealthTimestamp");
   const regionInput = document.querySelector("#ocrHealthRegions");
@@ -4000,11 +4442,15 @@ async function runOcrHealthCheck(matchId) {
   const mount = document.querySelector("#ocrHealthResult");
   if (mount) mount.innerHTML = '<p class="muted">Capturing frame and checking OCR region boxes...</p>';
   setStatus("Checking OCR regions...", { state: "busy" });
-  const payload = await api(`/api/matches/${matchId}/ocr-health`, {
+  const payload = await api(`/api/matches/${targetMatch}/ocr-health`, {
     method: "POST",
     body: JSON.stringify({ timestamp, regions }),
   });
-  if (mount) mount.innerHTML = renderOcrHealthResult(payload.analysis || {});
+  if (mount) {
+    mount.innerHTML = renderOcrHealthResult(payload.analysis || {});
+  } else {
+    els.reportView.innerHTML = renderOcrHealthResult(payload.analysis || {});
+  }
   setStatus(payload.message || "OCR region check complete.");
 }
 
@@ -4338,6 +4784,64 @@ function escapeAttr(value) {
   return escapeHtml(value).replaceAll("`", "&#096;");
 }
 
+function handleToolButton(button) {
+  const action = button.dataset.action;
+  if (action === "open-tool") {
+    openTool(button.dataset.tool || "tools-home");
+    return true;
+  }
+  if (action === "save-automation") saveAutomationSettings().catch((err) => setStatus(err.message));
+  else if (action === "save-setup") saveSetupWizard().catch((err) => setStatus(err.message));
+  else if (action === "start-watcher") startWatcher().catch((err) => setStatus(err.message));
+  else if (action === "stop-watcher") stopWatcher().catch((err) => setStatus(err.message));
+  else if (action === "cancel-job") cancelJob(button.dataset.id).catch((err) => setStatus(err.message));
+  else if (action === "cleanup-frames") cleanupStorage(["vision", "deep"]).catch((err) => setStatus(err.message));
+  else if (action === "cleanup-clips") cleanupStorage(["clips"]).catch((err) => setStatus(err.message));
+  else if (action === "retention") applyRetention().catch((err) => setStatus(err.message));
+  else if (action === "backup-db") backupDb().catch((err) => setStatus(err.message));
+  else if (action === "restore-db") restoreDb().catch((err) => setStatus(err.message));
+  else if (action === "search-deaths") searchDeaths().catch((err) => setStatus(err.message));
+  else if (action === "load-playbook-editor") loadPlaybookEditor();
+  else if (action === "save-playbook") savePlaybook().catch((err) => setStatus(err.message));
+  else if (action === "delete-playbook") deletePlaybookFromEditor().catch((err) => setStatus(err.message));
+  else if (action === "apply-correction") applyCorrection(button.dataset.id).catch((err) => setStatus(err.message));
+  else if (action === "use-lmstudio-defaults") useLmStudioDefaults();
+  else if (action === "use-olmocr-defaults") useOlmocrDefaults();
+  else if (action === "set-local-ai-fps") setLocalAiFps(button.dataset.fps);
+  else if (action === "set-local-ai-window") setLocalAiWindow(button.dataset.window);
+  else if (action === "test-local-ai") testLocalAiConfig().catch((err) => setStatus(err.message));
+  else if (action === "save-local-ai") saveLocalAiConfig().catch((err) => setStatus(err.message));
+  else if (action === "rebuild-knowledge") rebuildKnowledgeBase().catch((err) => setStatus(err.message));
+  else if (action === "search-knowledge") searchKnowledgeBase().catch((err) => setStatus(err.message));
+  else if (action === "load-prompt") loadPromptEditor();
+  else if (action === "save-prompt") savePromptTemplate().catch((err) => setStatus(err.message));
+  else if (action === "apply-detector-tuning") applyDetectorTuning().catch((err) => setStatus(err.message));
+  else if (action === "extract-parameters") extractParameters().catch((err) => setStatus(err.message));
+  else if (action === "refresh-parameters") loadAutomation().then(() => activeToolId && renderToolWorkspace(activeToolId)).catch((err) => setStatus(err.message));
+  else if (action === "save-parameter-label") saveParameterLabel(button).catch((err) => setStatus(err.message));
+  else if (action === "save-parameter-config") saveParameterConfig(button).catch((err) => setStatus(err.message));
+  else if (action === "build-detector-candidates") buildDetectorCandidates().catch((err) => setStatus(err.message));
+  else if (action === "prelabel-detector-candidates") prelabelDetectorCandidates().catch((err) => setStatus(err.message));
+  else if (action === "evaluate-detector") evaluateDetector().catch((err) => setStatus(err.message));
+  else if (action === "export-detector-dataset") exportDetectorDataset().catch((err) => setStatus(err.message));
+  else if (action === "train-detector") trainDetector().catch((err) => setStatus(err.message));
+  else if (action === "use-detector-command") useDetectorCommand();
+  else if (action === "refresh-diagnostics") loadAutomation().then(() => activeToolId && renderToolWorkspace(activeToolId)).then(() => setStatus("Diagnostics refreshed.")).catch((err) => setStatus(err.message));
+  else if (action === "refresh-evaluation") loadAutomation().then(() => activeToolId && renderToolWorkspace(activeToolId)).then(() => setStatus("Benchmark refreshed.")).catch((err) => setStatus(err.message));
+  else if (action === "privacy-export") privacyExport().catch((err) => setStatus(err.message));
+  else if (action === "debug-bundle") debugBundle().catch((err) => setStatus(err.message));
+  else if (action === "privacy-wipe-frames") privacyWipe(["vision", "deep"]).catch((err) => setStatus(err.message));
+  else if (action === "privacy-wipe-clips") privacyWipe(["clips"]).catch((err) => setStatus(err.message));
+  else if (action === "session-report") refreshSessionReport().catch((err) => setStatus(err.message));
+  else if (action === "export-memory") exportMemory().catch((err) => setStatus(err.message));
+  else if (action === "import-memory") importMemory().catch((err) => setStatus(err.message));
+  else if (action === "export-report-json") exportCurrentReport("json").catch((err) => setStatus(err.message));
+  else if (action === "export-report-html") exportCurrentReport("html").catch((err) => setStatus(err.message));
+  else if (action === "import-stats") importStats().catch((err) => setStatus(err.message));
+  else return false;
+  return true;
+}
+
 els.saveSettingsBtn.addEventListener("click", () => saveSettings().catch((err) => setStatus(err.message)));
 els.saveCalibrationBtn.addEventListener("click", () => saveCalibration().catch((err) => setStatus(err.message)));
 els.scanBtn.addEventListener("click", () => scanFolder().catch((err) => setStatus(err.message)));
@@ -4359,6 +4863,7 @@ els.coachView.addEventListener("click", (event) => {
 els.automationView.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
+  if (handleToolButton(button)) return;
   const action = button.dataset.action;
   if (action === "save-automation") saveAutomationSettings().catch((err) => setStatus(err.message));
   if (action === "jump") jumpTo(button.dataset.ts);
@@ -4443,6 +4948,7 @@ els.matchesList.addEventListener("click", (event) => {
 els.reportView.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
+  if (handleToolButton(button)) return;
   const action = button.dataset.action;
   if (action === "cancel-job") cancelJob(button.dataset.id).catch((err) => setStatus(err.message));
   if (action === "jump") jumpTo(button.dataset.ts);

@@ -23,11 +23,14 @@ This file is the living knowledge note for the VALORANT Coach Agent interface. U
 - **Review**: video, timeline, death candidates, confirmed death markers, Clip Coach.
 - **Coach**: match coach plan, coach memory, priorities, themes, whole-VOD coach moments.
 - **Player Status**: aggregate mistake patterns, review coverage, round coverage, perception/coaching trends.
+- **Tools Workspace**: main-panel workspace for AI Coach Setup, Data Quality, Diagnostics, and Admin tools. The left sidebar may launch tools and show short readiness status, but must not host full dashboards or raw configuration forms.
 - **Diagnostics/Tools**: Parameter Trainer, OCR health, calibration overlay, detector benchmarking, visual/OCR analysis receipts, legacy clip diagnostics, logs, backups, privacy, local AI setup, detector training.
 
 ## Placement Rules
 
 - Primary user-facing review actions belong in the Review workspace action bar.
+- The left sidebar is navigation and compact status only. Complex tools render in the main Review/workspace area.
+- Advanced controls must use progressive disclosure: show the basic workflow first, then evidence/corrections, then raw configuration.
 - Clip-level actions should collapse into **Coach Clip** unless the user opens Diagnostics.
 - Match-wide technical analysis belongs in Diagnostics, not in the default review flow.
 - Evidence receipts are useful for trust but should stay folded by default.
@@ -43,5 +46,5 @@ This file is the living knowledge note for the VALORANT Coach Agent interface. U
 - Keep death cards summary-first: timestamp, round/source, labels, marker lifecycle, Jump, Coach Clip.
 - Move context, advice details, evidence receipts, marker editing, detector annotation, and legacy diagnostics into named foldouts.
 - Present OCR calibration as **Check OCR Regions**: capture a frame, drag/resize named boxes, save regions, then rerun the OCR check.
-- Present OCR-derived gameplay context through **Parameter Trainer** before low-level OCR Health. Each calculated value should show its source region, extraction rule, dependencies, latest read, confidence, raw text, and label accuracy.
+- Present OCR-derived gameplay context through **Parameter Trainer** as a stepwise workflow: select frame, read values, correct labels, then optionally tune rules. Do not show every parameter rule before a frame has been read.
 - Prefer small frontend render helpers over adding more logic directly inside `renderReport` or `renderDeathCard`.
